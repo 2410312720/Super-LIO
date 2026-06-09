@@ -7,6 +7,40 @@ using namespace BASIC;
 
 namespace LI2Sup{
 
+namespace {
+constexpr int kOdomCovDim = 6;
+constexpr int kEskfRotStart = 0;
+constexpr int kEskfPosStart = 3;
+constexpr int kEskfVelStart = 6;
+
+inline int odomPoseIndexToEskfIndex(const int odom_index)
+{
+  return odom_index < 3 ? kEskfPosStart + odom_index
+                        : kEskfRotStart + odom_index - 3;
+}
+
+void fillOdomCovariance(nav_msgs::msg::Odometry& odom, const ESKF::COV& cov)
+{
+  // ESKF state order is R, p, v, ... while ROS pose covariance order is
+  // x, y, z, roll, pitch, yaw.
+  for (int r = 0; r < kOdomCovDim; ++r) {
+    const int src_r = odomPoseIndexToEskfIndex(r);
+    for (int c = 0; c < kOdomCovDim; ++c) {
+      const int src_c = odomPoseIndexToEskfIndex(c);
+      odom.pose.covariance[r * kOdomCovDim + c] =
+          static_cast<double>(cov(src_r, src_c));
+    }
+  }
+
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      odom.twist.covariance[r * kOdomCovDim + c] =
+          static_cast<double>(cov(kEskfVelStart + r, kEskfVelStart + c));
+    }
+  }
+}
+}  // namespace
+
 void LoadParamFromRos(rclcpp::Node& node)
 {
   node.declare_parameter<bool>("lio.map.save_map", false);
@@ -369,6 +403,7 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
   DynamicState imu_state, robo_state;
   if(eskf_->Predict(data, imu_state, robo_state)){
     nav_msgs::msg::Odometry odom_imu, odom_robo;
+    const auto cov = eskf_->GetCov();
 
     {
       odom_imu.pose.pose.position.x = imu_state.p(0);
@@ -404,12 +439,22 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
       odom_robo.pose.pose.orientation.y = q.y();
       odom_robo.pose.pose.orientation.z = q.z();
       odom_robo.pose.pose.orientation.w = q.w();
+
+      odom_robo.twist.twist.linear.x = robo_state.v(0);
+      odom_robo.twist.twist.linear.y = robo_state.v(1);
+      odom_robo.twist.twist.linear.z = robo_state.v(2);
+
+      odom_robo.twist.twist.angular.x = robo_state.w(0);
+      odom_robo.twist.twist.angular.y = robo_state.w(1);
+      odom_robo.twist.twist.angular.z = robo_state.w(2);
     }
 
     odom_imu.header.stamp = msg->header.stamp;
     odom_robo.header.stamp = msg->header.stamp;
     odom_imu.header.frame_id = "world";
     odom_robo.header.frame_id = "world";
+    fillOdomCovariance(odom_imu, cov);
+    fillOdomCovariance(odom_robo, cov);
     pub_imu_odom_->publish(odom_imu);
     pub_robo_odom_->publish(odom_robo);
   }
@@ -508,31 +553,20 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
     }
     break;
   }
-  case LID_TYPE::LS16:
+  case LID_TYPE::GZ_SIM:
   {
-    pcl::PointCloud<LivoxSIM::Point> pl_orig;
+    pcl::PointCloud<GzSim::Point> pl_orig;
     pcl::fromROSMsg(*msg, pl_orig);
     lidar_data.pc->reserve(pl_orig.size() / g_filter_rate + 1);
     lidar_data.start_time = stampToSec(msg->header.stamp);
 
-    double scan_period = 0.1;
-    if (last_lidar_msg_stamp_ > 0.0 &&
-        lidar_data.start_time > last_lidar_msg_stamp_) {
-      scan_period = lidar_data.start_time - last_lidar_msg_stamp_;
-      if (scan_period < 1e-3) scan_period = 1e-3;
-      if (scan_period > 0.2)  scan_period = 0.2;
-    }
-
-    const double denom =
-        static_cast<double>(pl_orig.size() > 1 ? pl_orig.size() - 1 : 1);
     for (std::size_t i = 0; i < pl_orig.size(); i += g_filter_rate) {
       auto& pt = pl_orig.points[i];
       if (!validPoint(pt.x, pt.y, pt.z)) continue;
-      offset_time = scan_period * static_cast<double>(i) / denom;
       lidar_data.pc->emplace_back(
-          pt.x, pt.y, pt.z, pt.intensity, offset_time);
+          pt.x, pt.y, pt.z, pt.intensity, 0.0);
     }
-    lidar_data.end_time = lidar_data.start_time + offset_time;
+    lidar_data.end_time = lidar_data.start_time;
     break;
   }
   case OUSTER:
@@ -616,6 +650,10 @@ void ROSWrapper::pub_odom(const NavState& state){
   odom.twist.twist.linear.x = state.v[0];
   odom.twist.twist.linear.y = state.v[1];
   odom.twist.twist.linear.z = state.v[2];
+
+  if (eskf_) {
+    fillOdomCovariance(odom, eskf_->GetCov());
+  }
 
   pub_odom_->publish(odom);    // imu frame -> lidar frequency
 

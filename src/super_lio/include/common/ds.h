@@ -19,7 +19,7 @@ enum LID_TYPE
   VELO16 = 3,
   VELO32 = 4,
   VEL_NCLT = 5,
-  LS16 = 6,
+  GZ_SIM = 6,
   OUSTER = 7
 };
 
@@ -30,7 +30,7 @@ static const std::array<std::string, 8> LID_TYPE_NAMES = {
   "VELO16",
   "VELO32",
   "VEL_NCLT",
-  "LS16",
+  "GZ_SIM",
   "OUSTER"
 };
 
