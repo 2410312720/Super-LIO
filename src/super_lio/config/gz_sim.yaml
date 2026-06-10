@@ -23,10 +23,10 @@
     lio.sensor.imu_nba: 0.0001
     lio.sensor.imu_nbg: 0.0001
 
-    lio.extrinsic.lidar_imu: [-0.011, -0.02329, 0.04412,
-                              1.0, 0.0, 0.0,
-                              0.0, 1.0, 0.0,
-                              0.0, 0.0, 1.0]
+    lio.extrinsic.lidar_imu: [0.0,        0.0,    0.173,
+                              0.9848078,  0.0,    -0.1736482,
+                              0.0,        1.0,    0.0,
+                              0.1736482,  0.0,    0.9848078]
     lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     lio.hash_map.hash_capacity: 2000000
