@@ -119,7 +119,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(LI2Sup::PointXTZIT,
  
  
  
-namespace LivoxSIM {
+namespace GzSim {
 struct EIGEN_ALIGN16 Point {
     PCL_ADD_POINT4D
     float intensity;
@@ -128,7 +128,7 @@ struct EIGEN_ALIGN16 Point {
 }
  
  
-POINT_CLOUD_REGISTER_POINT_STRUCT(LivoxSIM::Point,
+POINT_CLOUD_REGISTER_POINT_STRUCT(GzSim::Point,
                                   (float, x, x)
                                   (float, y, y)
                                   (float, z, z)

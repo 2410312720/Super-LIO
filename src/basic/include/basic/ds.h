@@ -16,7 +16,7 @@ namespace BASIC
     VELO16,
     VELO32,
     VEL_NCLT,
-    LS16
+    GZ_SIM
   };
 
   

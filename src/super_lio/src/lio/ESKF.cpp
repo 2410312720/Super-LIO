@@ -151,12 +151,15 @@ bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& st
   forward_time_ = imu.secs;
   forward_last_imu_ = imu;
 
+  const V3 imu_to_robot = -g_odom_robo.R_ * g_odom_robo.t_;
   new_R.R_ = fw_R_.R_ * g_odom_robo.R_;
-  new_p = fw_R_.R_ * ( - g_odom_robo.R_ * g_odom_robo.t_) + fw_p_;
+  new_p = fw_R_.R_ * imu_to_robot + fw_p_;
   state_robot.time = imu.secs;
   state_robot.R = new_R.R_;
   state_robot.p = new_p;
-  // todo: v, w, a
+  state_robot.v = fw_v_ + fw_R_.R_ * gyr.cross(imu_to_robot);
+  state_robot.w = g_odom_robo.R_.transpose() * gyr;
+  state_robot.a = g_odom_robo.R_.transpose() * acc;
 
   return true;
 }
