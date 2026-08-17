@@ -77,10 +77,10 @@ void SuperLIOReLoc::init(){
   ds_world_.reset(new PointCloudType());
   point_map_.reset(new PointCloudType());
   init_obs_data_.reset(new PointCloudType());
+
+  dynamic_filter_.setOptions(g_dynamic_filter_options);
+  temporal_voxel_map_.setOptions(g_dynamic_filter_options);
   
-  points_world_v3_.reserve(21000);
-  abcd_vec_.resize(20000);
-  effect_knn_idxs_.resize(20000);
   voxel_grid_fliter_.setLeafSize(g_voxel_fliter_size);
 
   LOG(INFO) << GREEN << " ---> [SuperLIO]: initialized." << RESET;
@@ -269,60 +269,31 @@ bool SuperLIOReLoc::kf_init(){
 
 
 void SuperLIOReLoc::UpdateMap() {
-  if(g_update_map){
-    static int __update_delay = 100;
-    if(__update_delay > 0){
-      __update_delay--;
-      std::cout << "Update map Delay: " << 100 - __update_delay << " %" << std::endl;
-      return;
-    }
+  const size_t ptsize = ds_undistort_->size();
+  newly_promoted_points_world_.clear();
+  if (ptsize == 0) {
+    points_world_v3_.clear();
+    return;
   }
 
-  const size_t ptsize = ds_undistort_->size();
-  if (ptsize == 0) return;
-  
-  last_pose_ = kf_->GetSE3();
-  points_world_v3_.resize(ptsize);
-  
-  const auto R = last_pose_.R_;
-  const auto t = last_pose_.t_;
-  
-  for (size_t i = 0; i < ptsize; ++i) {
-    const auto& pt = points_body_v3_[i];
-    points_world_v3_[i] = R * pt + t;
+  // World points are always required for debug output, even in localization-only mode.
+  transformCurrentPointsToWorld();
+  if (!g_update_map) return;
+
+  if(map_update_delay_frames_ > 0){
+    --map_update_delay_frames_;
+    std::cout << "Update map Delay: " << 100 - map_update_delay_frames_
+              << " %" << std::endl;
+    return;
   }
-  
-  ivox_->insert(points_world_v3_);
+
+  updateMapFromCurrentWorldPoints();
 
 }
 
 
 void SuperLIOReLoc::Output() {
-  auto state = kf_->GetNavState();
-  data_wrapper_->pub_odom(state);  
-
-  Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
-  transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
-  transformation.block<3, 1>(0, 3) = state.p.cast<float>();
-
-  CloudPtr world_pc(new PointCloudType());
-  
-  if(g_visual_map){
-    static int count = -1;
-    count++;
-    if(count % g_pub_step != 0){
-      return;
-    }
-    count = 0;
-    if(g_visual_dense){
-      pcl::transformPointCloud(*scan_undistort_full_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }else{
-      pcl::transformPointCloud(*ds_undistort_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }
-  }
-
+  SuperLIO::Output();
 }
 
 

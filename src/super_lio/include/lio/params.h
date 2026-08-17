@@ -20,6 +20,7 @@
 
 #include "basic/alias.h"
 #include "basic/Manifold.h"
+#include "lio/dynamic_filter.h"
 
 
 namespace LI2Sup{
@@ -97,6 +98,9 @@ namespace LI2Sup{
   /// for relocation
   extern bool g_update_map;
   extern double g_init_px, g_init_py, g_init_pz, g_init_roll, g_init_pitch, g_init_yaw;
+
+  /// dynamic point filtering
+  extern DynamicFilterOptions g_dynamic_filter_options;
 
 }
 

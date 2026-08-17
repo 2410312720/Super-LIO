@@ -124,4 +124,11 @@ install(DIRECTORY rviz/
   DESTINATION share/${PROJECT_NAME}/rviz
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_dynamic_filter test/test_dynamic_filter.cpp)
+  target_link_libraries(test_dynamic_filter lio)
+endif()
+
 ament_package()

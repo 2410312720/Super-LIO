@@ -224,6 +224,72 @@ void LoadParamFromRos(rclcpp::Node& node)
   g_init_pitch = init_pose[4];
   g_init_yaw   = init_pose[5];
 
+  // ================= dynamic point filtering =================
+  auto& dynamic = g_dynamic_filter_options;
+  node.declare_parameter<bool>("lio.dynamic.enable", false);
+  node.get_parameter("lio.dynamic.enable", dynamic.enable);
+  node.declare_parameter<bool>("lio.dynamic.filter_pose_update", true);
+  node.get_parameter("lio.dynamic.filter_pose_update", dynamic.filter_pose_update);
+  node.declare_parameter<bool>("lio.dynamic.filter_map_update", true);
+  node.get_parameter("lio.dynamic.filter_map_update", dynamic.filter_map_update);
+  node.declare_parameter<bool>("lio.dynamic.filter_saved_map", true);
+  node.get_parameter("lio.dynamic.filter_saved_map", dynamic.filter_saved_map);
+  node.declare_parameter<bool>("lio.dynamic.publish_debug_clouds", true);
+  node.get_parameter("lio.dynamic.publish_debug_clouds", dynamic.publish_debug_clouds);
+
+  node.declare_parameter<double>("lio.dynamic.temporal_voxel_size", 0.25);
+  node.get_parameter("lio.dynamic.temporal_voxel_size", dynamic.temporal_voxel_size);
+  node.declare_parameter<int>("lio.dynamic.static_confirm_frames", 3);
+  node.get_parameter("lio.dynamic.static_confirm_frames", dynamic.static_confirm_frames);
+  node.declare_parameter<int>("lio.dynamic.max_unseen_frames", 20);
+  node.get_parameter("lio.dynamic.max_unseen_frames", dynamic.max_unseen_frames);
+  node.declare_parameter<double>("lio.dynamic.max_static_variance", 0.01);
+  node.get_parameter("lio.dynamic.max_static_variance", dynamic.max_static_variance);
+
+  node.declare_parameter<double>("lio.dynamic.residual_base", 0.10);
+  node.get_parameter("lio.dynamic.residual_base", dynamic.residual_base);
+  node.declare_parameter<double>("lio.dynamic.residual_range_scale", 0.003);
+  node.get_parameter("lio.dynamic.residual_range_scale", dynamic.residual_range_scale);
+  node.declare_parameter<double>("lio.dynamic.dynamic_residual_multiplier", 2.5);
+  node.get_parameter("lio.dynamic.dynamic_residual_multiplier", dynamic.dynamic_residual_multiplier);
+
+  node.declare_parameter<double>("lio.dynamic.robust_scale", 0.15);
+  node.get_parameter("lio.dynamic.robust_scale", dynamic.robust_scale);
+  node.declare_parameter<double>("lio.dynamic.observation_inv_variance", 1000.0);
+  node.get_parameter("lio.dynamic.observation_inv_variance", dynamic.observation_inv_variance);
+
+  node.declare_parameter<double>("lio.dynamic.static_weight", 1.0);
+  node.get_parameter("lio.dynamic.static_weight", dynamic.static_weight);
+  node.declare_parameter<double>("lio.dynamic.unknown_weight", 0.25);
+  node.get_parameter("lio.dynamic.unknown_weight", dynamic.unknown_weight);
+  node.declare_parameter<double>("lio.dynamic.candidate_weight", 0.05);
+  node.get_parameter("lio.dynamic.candidate_weight", dynamic.candidate_weight);
+  node.declare_parameter<double>("lio.dynamic.dynamic_weight", 0.0);
+  node.get_parameter("lio.dynamic.dynamic_weight", dynamic.dynamic_weight);
+
+  node.declare_parameter<int>("lio.dynamic.min_effective_points", 40);
+  node.get_parameter("lio.dynamic.min_effective_points", dynamic.min_effective_points);
+  node.declare_parameter<int>("lio.dynamic.init_collect_frames", 6);
+  node.get_parameter("lio.dynamic.init_collect_frames", dynamic.init_collect_frames);
+  node.declare_parameter<int>("lio.dynamic.init_static_min_hits", 3);
+  node.get_parameter("lio.dynamic.init_static_min_hits", dynamic.init_static_min_hits);
+  node.declare_parameter<int>("lio.dynamic.init_min_static_points", 100);
+  node.get_parameter("lio.dynamic.init_min_static_points", dynamic.init_min_static_points);
+
+  if (!dynamic.sanitize()) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [DynamicFilter] Invalid parameters were replaced with safe values."
+                 << RESET;
+  }
+  LOG(INFO) << GREEN
+            << " ---> [DynamicFilter] enable=" << dynamic.enable
+            << ", pose=" << dynamic.filter_pose_update
+            << ", map=" << dynamic.filter_map_update
+            << ", saved_map=" << dynamic.filter_saved_map
+            << ", voxel=" << dynamic.temporal_voxel_size
+            << ", confirm_frames=" << dynamic.static_confirm_frames
+            << RESET;
+
   LOG(INFO) << GREEN << " ---> [Params]: Load from ROS2 parameter server."
             << RESET;
 }
@@ -233,9 +299,10 @@ void livox2pcl(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg, CloudPtr
   point_cloud->clear();
   CloudPtr cloud_full(new PointCloudType());
   int plsize = msg->point_num;
+  if (plsize < 2) return;
   cloud_full->resize(plsize);
   point_cloud->reserve(plsize);
-  std::vector<bool> is_valid_pt(plsize, false);
+  std::vector<std::uint8_t> is_valid_pt(plsize, 0);
   std::vector<std::size_t> index(plsize - 1);
   std::iota(std::begin(index), std::end(index), 1);
 
@@ -257,7 +324,7 @@ void livox2pcl(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg, CloudPtr
                               cloud_full->at(i).y * cloud_full->at(i).y +
                               cloud_full->at(i).z * cloud_full->at(i).z;
           if(normal_dis > g_blind2 and normal_dis < g_maxrange2){
-            is_valid_pt[i] = true;
+            is_valid_pt[i] = 1;
           }
         }
       }
@@ -372,6 +439,22 @@ void ROSWrapper::setupIO(){
   pub_cloud_world_ =
     this->create_publisher<sensor_msgs::msg::PointCloud2>(
         "/lio/cloud_world", 10);
+
+  if (g_dynamic_filter_options.enable &&
+      g_dynamic_filter_options.publish_debug_clouds) {
+    pub_cloud_static_ =
+      this->create_publisher<sensor_msgs::msg::PointCloud2>(
+          "/lio/cloud_static", 5);
+    pub_cloud_dynamic_ =
+      this->create_publisher<sensor_msgs::msg::PointCloud2>(
+          "/lio/cloud_dynamic", 5);
+    pub_cloud_unknown_ =
+      this->create_publisher<sensor_msgs::msg::PointCloud2>(
+          "/lio/cloud_unknown", 5);
+    pub_dynamic_ratio_ =
+      this->create_publisher<std_msgs::msg::Float32>(
+          "/lio/dynamic_ratio", 5);
+  }
 
   tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(this);
@@ -718,6 +801,37 @@ void ROSWrapper::pub_cloud_world(const CloudPtr& pc, double time){
   cloud.header.frame_id = "world";
   cloud.header.stamp = toRosTime(time);
   pub_cloud_world_->publish(cloud);
+}
+
+
+void ROSWrapper::pub_dynamic_debug_clouds(
+    const CloudPtr& static_cloud, const CloudPtr& dynamic_cloud,
+    const CloudPtr& unknown_cloud, const float dynamic_ratio,
+    const double time) {
+  if (!g_dynamic_filter_options.enable ||
+      !g_dynamic_filter_options.publish_debug_clouds ||
+      !pub_cloud_static_ || !pub_cloud_dynamic_ || !pub_cloud_unknown_ ||
+      !pub_dynamic_ratio_) {
+    return;
+  }
+
+  const auto stamp = toRosTime(time);
+  auto publish_cloud = [&stamp](
+      const CloudPtr& point_cloud,
+      const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher) {
+    sensor_msgs::msg::PointCloud2 message;
+    pcl::toROSMsg(*point_cloud, message);
+    message.header.frame_id = "world";
+    message.header.stamp = stamp;
+    publisher->publish(message);
+  };
+  publish_cloud(static_cloud, pub_cloud_static_);
+  publish_cloud(dynamic_cloud, pub_cloud_dynamic_);
+  publish_cloud(unknown_cloud, pub_cloud_unknown_);
+
+  std_msgs::msg::Float32 ratio_message;
+  ratio_message.data = dynamic_ratio;
+  pub_dynamic_ratio_->publish(ratio_message);
 }
 
 

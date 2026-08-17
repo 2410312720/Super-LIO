@@ -1,6 +1,11 @@
 
 #include "lio/super_lio.h"
 
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <unordered_map>
 #include <sys/resource.h>
 #include <tbb/parallel_for.h>
 #include <tbb/blocked_range.h>
@@ -11,6 +16,111 @@
 using namespace BASIC;
 
 namespace LI2Sup{
+
+namespace {
+
+struct InitializationVoxelKey {
+  std::int64_t x = 0;
+  std::int64_t y = 0;
+  std::int64_t z = 0;
+
+  bool operator==(const InitializationVoxelKey& other) const {
+    return x == other.x && y == other.y && z == other.z;
+  }
+};
+
+struct InitializationVoxelKeyHash {
+  std::size_t operator()(const InitializationVoxelKey& key) const {
+    std::size_t seed = std::hash<std::int64_t>{}(key.x);
+    seed ^= std::hash<std::int64_t>{}(key.y) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+    seed ^= std::hash<std::int64_t>{}(key.z) + 0x9e3779b97f4a7c15ULL +
+            (seed << 6U) + (seed >> 2U);
+    return seed;
+  }
+};
+
+struct InitializationVoxelAccumulator {
+  std::array<double, 3> sum{0.0, 0.0, 0.0};
+  double squared_norm_sum = 0.0;
+  std::size_t count = 0;
+};
+
+bool makeInitializationVoxelKey(
+    const V3& point, const double voxel_size,
+    InitializationVoxelKey& key) {
+  if (!std::isfinite(voxel_size) || voxel_size <= 0.0) return false;
+  const double inverse_size = 1.0 / voxel_size;
+  const double min_key = static_cast<double>(
+      std::numeric_limits<std::int64_t>::lowest());
+  const double max_key = static_cast<double>(
+      std::numeric_limits<std::int64_t>::max());
+  std::array<double, 3> coordinates{};
+  for (int i = 0; i < 3; ++i) {
+    coordinates[i] = std::floor(
+        static_cast<double>(point[i]) * inverse_size);
+    if (!std::isfinite(coordinates[i]) || coordinates[i] < min_key ||
+        coordinates[i] > max_key) {
+      return false;
+    }
+  }
+  key.x = static_cast<std::int64_t>(coordinates[0]);
+  key.y = static_cast<std::int64_t>(coordinates[1]);
+  key.z = static_cast<std::int64_t>(coordinates[2]);
+  return true;
+}
+
+VV3 aggregateInitializationFrame(
+    const VV3& points, const double voxel_size) {
+  std::unordered_map<InitializationVoxelKey, InitializationVoxelAccumulator,
+                     InitializationVoxelKeyHash> voxels;
+  voxels.reserve(points.size());
+  for (const auto& point : points) {
+    InitializationVoxelKey key;
+    if (!makeInitializationVoxelKey(point, voxel_size, key)) continue;
+    auto& accumulator = voxels[key];
+    accumulator.sum[0] += point[0];
+    accumulator.sum[1] += point[1];
+    accumulator.sum[2] += point[2];
+    ++accumulator.count;
+  }
+
+  VV3 representatives;
+  representatives.reserve(voxels.size());
+  for (const auto& [key, accumulator] : voxels) {
+    (void)key;
+    if (accumulator.count == 0) continue;
+    const double inverse_count = 1.0 / accumulator.count;
+    representatives.emplace_back(
+        static_cast<scalar>(accumulator.sum[0] * inverse_count),
+        static_cast<scalar>(accumulator.sum[1] * inverse_count),
+        static_cast<scalar>(accumulator.sum[2] * inverse_count));
+  }
+  return representatives;
+}
+
+double initializationPositionVariance(
+    const InitializationVoxelAccumulator& accumulator) {
+  if (accumulator.count == 0) {
+    return std::numeric_limits<double>::infinity();
+  }
+  const double inverse_count = 1.0 / accumulator.count;
+  const double mean_x = accumulator.sum[0] * inverse_count;
+  const double mean_y = accumulator.sum[1] * inverse_count;
+  const double mean_z = accumulator.sum[2] * inverse_count;
+  return std::max(0.0, accumulator.squared_norm_sum * inverse_count -
+      (mean_x * mean_x + mean_y * mean_y + mean_z * mean_z));
+}
+
+V3 initializationMean(const InitializationVoxelAccumulator& accumulator) {
+  const double inverse_count = 1.0 / accumulator.count;
+  return V3(
+      static_cast<scalar>(accumulator.sum[0] * inverse_count),
+      static_cast<scalar>(accumulator.sum[1] * inverse_count),
+      static_cast<scalar>(accumulator.sum[2] * inverse_count));
+}
+
+}  // namespace
 
 inline bool calc_plane_coeff(const int N, const std::array<V3, 5>& points, std::array<double, 4>& abcd)
 {
@@ -36,18 +146,22 @@ inline bool calc_plane_coeff(const int N, const std::array<V3, 5>& points, std::
   }
 
   double n = normvec.norm();
-  if (n < 1e-6f) return false;
+  if (!std::isfinite(n) || n < 1e-6) return false;
 
   abcd[3] = 1.0 / n;
   normvec *= abcd[3];
   abcd[0] = normvec[0];
   abcd[1] = normvec[1];
   abcd[2] = normvec[2];
+  if (!std::all_of(abcd.begin(), abcd.end(),
+                   [](const double value) { return std::isfinite(value); })) {
+    return false;
+  }
   
   for (int i = 0; i < N; ++i) {
     const V3& p = points[i];
     auto dist = abcd[0] * p(0) + abcd[1] * p(1) + abcd[2] * p(2) + abcd[3];
-    if (std::abs(dist) > 0.1) return false;
+    if (!std::isfinite(dist) || std::abs(dist) > 0.1) return false;
   }
   return true;
 }
@@ -58,7 +172,8 @@ inline bool compute_error(
   const float length, scalar& error)
 {
   error = abcd[0] * point[0] + abcd[1] * point[1] + abcd[2] * point[2] + abcd[3];
-  return length > 81 * error * error;
+  return std::isfinite(length) && std::isfinite(error) &&
+      length > 81 * error * error;
 }
 
 
@@ -75,10 +190,10 @@ void SuperLIO::init(){
   if(g_save_map){
     point_map_.reset(new PointCloudType());
   }
+
+  dynamic_filter_.setOptions(g_dynamic_filter_options);
+  temporal_voxel_map_.setOptions(g_dynamic_filter_options);
   
-  points_world_v3_.reserve(21000);
-  abcd_vec_.resize(20000);
-  effect_knn_idxs_.resize(20000);
   voxel_grid_fliter_.setLeafSize(g_voxel_fliter_size);
 
   state_fn_ = &SuperLIO::stateWaitKFInit;
@@ -161,7 +276,7 @@ bool SuperLIO::kf_init(){
 
 
 bool SuperLIO::map_init(){
-  frame_num_++;
+  ++init_frame_count_;
 
   std::size_t ptsize = measures_.lidar.pc->size();
   points_world_v3_.resize(ptsize);
@@ -179,20 +294,93 @@ bool SuperLIO::map_init(){
     }
   );
 
-  ivox_->insert(points_world_v3_);
   kf_->SetLastObsTime(measures_.lidar.end_time);
 
-  // 20 Hz for 1.0 seconds. Integral coverage area > 70%
-  if(frame_num_ > 3){
+  const bool filter_initial_map = g_dynamic_filter_options.enable &&
+      g_dynamic_filter_options.filter_map_update;
+  if (!filter_initial_map) {
+    ivox_->insert(points_world_v3_);
+    // Preserve the original four-frame initialization when filtering is off.
+    if(init_frame_count_ > 3){
+      g_flg_map_init = false;
+      return true;
+    }
+    return false;
+  }
+
+  init_frame_points_world_.push_back(aggregateInitializationFrame(
+      points_world_v3_, g_dynamic_filter_options.temporal_voxel_size));
+  if (init_frame_count_ < g_dynamic_filter_options.init_collect_frames) {
+    return false;
+  }
+
+  std::unordered_map<InitializationVoxelKey, InitializationVoxelAccumulator,
+                     InitializationVoxelKeyHash> initialization_voxels;
+  for (const auto& frame_points : init_frame_points_world_) {
+    for (const auto& point : frame_points) {
+      InitializationVoxelKey key;
+      if (!makeInitializationVoxelKey(
+              point, g_dynamic_filter_options.temporal_voxel_size, key)) {
+        continue;
+      }
+      auto& accumulator = initialization_voxels[key];
+      accumulator.sum[0] += point[0];
+      accumulator.sum[1] += point[1];
+      accumulator.sum[2] += point[2];
+      accumulator.squared_norm_sum +=
+          static_cast<double>(point[0]) * point[0] +
+          static_cast<double>(point[1]) * point[1] +
+          static_cast<double>(point[2]) * point[2];
+      ++accumulator.count;
+    }
+  }
+
+  VV3 static_seed_points;
+  VV3 fallback_points;
+  static_seed_points.reserve(initialization_voxels.size());
+  fallback_points.reserve(initialization_voxels.size());
+  for (const auto& [key, accumulator] : initialization_voxels) {
+    (void)key;
+    if (accumulator.count == 0) continue;
+    const V3 mean = initializationMean(accumulator);
+    fallback_points.push_back(mean);
+    if (accumulator.count >= static_cast<std::size_t>(
+            g_dynamic_filter_options.init_static_min_hits) &&
+        initializationPositionVariance(accumulator) <=
+            g_dynamic_filter_options.max_static_variance) {
+      static_seed_points.push_back(mean);
+    }
+  }
+
+  if (static_seed_points.empty() ||
+      static_seed_points.size() < static_cast<std::size_t>(
+          g_dynamic_filter_options.init_min_static_points)) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [DynamicFilter] Only " << static_seed_points.size()
+                 << " confirmed static initialization voxels; using "
+                 << fallback_points.size() << " voxel representatives."
+                 << RESET;
+    ivox_->insert(fallback_points);
+  } else {
+    ivox_->insert(static_seed_points);
+  }
+  init_frame_points_world_.clear();
+  init_frame_points_world_.shrink_to_fit();
+  temporal_voxel_map_.clear();
+  if (!initialization_voxels.empty()) {
     g_flg_map_init = false;
     return true;
   }
+  LOG(WARNING) << YELLOW
+               << " ---> [DynamicFilter] Initialization contained no finite points; collecting another frame."
+               << RESET;
+  init_frame_count_ = 0;
   return false;
 }
 
 
 void SuperLIO::stateProcess(){
-  frame_num_++;
+  ++processing_frame_id_;
   if(g_time_eva){
     time_record_.Evaluate([this](){Propagation_Undistort();}, "[Undistort]");
     time_record_.Evaluate([this]() { DownSample(); }, "[DownSample]");
@@ -216,7 +404,34 @@ void SuperLIO::caceData(){
   transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();
   transformation.block<3, 1>(0, 3) = state.p.cast<float>();
 
-  if(g_if_filter){
+  if (g_dynamic_filter_options.enable &&
+      g_dynamic_filter_options.filter_saved_map) {
+    world_pc_->clear();
+    if (!tracking_degraded_this_frame_ &&
+        points_world_v3_.size() == motion_labels_.size() &&
+        ds_undistort_->size() == motion_labels_.size()) {
+      world_pc_->reserve(static_point_count_ + newly_promoted_points_world_.size());
+      for (std::size_t i = 0; i < motion_labels_.size(); ++i) {
+        if (motion_labels_[i] != MotionLabel::STATIC_CONFIRMED) continue;
+        PointType point = ds_undistort_->points[i];
+        point.x = points_world_v3_[i][0];
+        point.y = points_world_v3_[i][1];
+        point.z = points_world_v3_[i][2];
+        world_pc_->push_back(point);
+      }
+      for (const auto& point_world : newly_promoted_points_world_) {
+        PointType point;
+        point.x = point_world[0];
+        point.y = point_world[1];
+        point.z = point_world[2];
+        point.intensity = 0.0F;
+        world_pc_->push_back(point);
+      }
+    }
+    world_pc_->width = world_pc_->size();
+    world_pc_->height = 1;
+    world_pc_->is_dense = true;
+  } else if(g_if_filter){
     pcl::transformPointCloud(*ds_undistort_, *world_pc_, transformation);
   }else{
     pcl::transformPointCloud(*scan_undistort_full_, *world_pc_, transformation);
@@ -431,18 +646,29 @@ void SuperLIO::DownSample(){
 
 
 struct ThreadACC{
-  M6d HTVH = M6d::Zero();
-  V6d HTVr = V6d::Zero();
-  ThreadACC(): HTVH(M6d::Zero()), HTVr(V6d::Zero()) {}
+  M6d dynamic_HTVH = M6d::Zero();
+  V6d dynamic_HTVr = V6d::Zero();
+  M6d fallback_HTVH = M6d::Zero();
+  V6d fallback_HTVr = V6d::Zero();
+  std::size_t dynamic_effective_points = 0;
 };
 
 
 void SuperLIO::Observe(){
   size_t ptsize = ds_undistort_->size();
-  
-  static std::vector<float> _lengths;
+
   points_body_v3_.resize(ptsize);
-  _lengths.resize(ptsize);
+  point_ranges_.resize(ptsize);
+
+  knn_valid_mask_.assign(ptsize, 0);
+  plane_valid_mask_.assign(ptsize, 0);
+  residual_inlier_mask_.assign(ptsize, 0);
+  abcd_vec_.assign(ptsize, std::array<double, 4>{});
+  point_residuals_.assign(ptsize, std::numeric_limits<double>::quiet_NaN());
+  motion_labels_.assign(ptsize, MotionLabel::UNKNOWN);
+  motion_evidence_.assign(ptsize, PointMotionEvidence{});
+  effect_knn_idxs_.resize(ptsize);
+  tracking_degraded_this_frame_ = false;
 
   effect_knn_num_ = ptsize;
   std::iota(effect_knn_idxs_.begin(), effect_knn_idxs_.begin() + ptsize, 0);
@@ -450,11 +676,10 @@ void SuperLIO::Observe(){
   for(size_t i = 0; i < ptsize; ++i){
     const auto& point_body_pcl = ds_undistort_->points[i];
     points_body_v3_[i] = V3(point_body_pcl.x, point_body_pcl.y, point_body_pcl.z);
-    _lengths[i] = points_body_v3_[i].norm();
+    point_ranges_[i] = points_body_v3_[i].norm();
   }
 
   ivox_->reset_max_group();
-  int iter_num = 0;
 
   kf_->UpdateObserve([&, this](const ESKF::KFState &kf_state, M6 &HTVH, V6 &HTVr) {
     const SE3 pose = kf_state.pose;
@@ -477,20 +702,35 @@ void SuperLIO::Observe(){
             top_K.reset();
             ivox_->getTopK(point_world, top_K);
             if(top_K.count < 4){
-              effect_mask_[idx] = false;
-              effect_knn_mask_[idx] = false;
+              knn_valid_mask_[idx] = 0;
+              plane_valid_mask_[idx] = 0;
+              residual_inlier_mask_[idx] = 0;
+              motion_evidence_[idx].knn_valid = false;
+              motion_evidence_[idx].plane_valid = false;
               continue;
             }
-            effect_knn_mask_[idx] = true;
-            effect_mask_[idx] = calc_plane_coeff(top_K.count, top_K.points_, abcd_vec_[idx]);
+            knn_valid_mask_[idx] = 1;
+            plane_valid_mask_[idx] = calc_plane_coeff(
+              top_K.count, top_K.points_, abcd_vec_[idx]);
+            motion_evidence_[idx].knn_valid = true;
+            motion_evidence_[idx].plane_valid = plane_valid_mask_[idx] != 0;
           }
 
-          if(!effect_mask_[idx]) continue;
+          if(!plane_valid_mask_[idx]) continue;
+          if(need_converge && !residual_inlier_mask_[idx]) continue;
 
           auto& abcd = abcd_vec_[idx];
           scalar error;
-          effect_mask_[idx] = compute_error(abcd, point_world, _lengths[idx], error);
-          if(!effect_mask_[idx]) continue;
+          residual_inlier_mask_[idx] = compute_error(
+            abcd, point_world, point_ranges_[idx], error);
+          point_residuals_[idx] = static_cast<double>(error);
+          motion_labels_[idx] = dynamic_filter_.classify(
+            true, point_residuals_[idx], static_cast<double>(point_ranges_[idx]));
+          motion_evidence_[idx].residual_inlier = residual_inlier_mask_[idx] != 0;
+          motion_evidence_[idx].residual = point_residuals_[idx];
+          motion_evidence_[idx].range = static_cast<double>(point_ranges_[idx]);
+          motion_evidence_[idx].label = motion_labels_[idx];
+          if(!residual_inlier_mask_[idx]) continue;
           
           {
             V3d normvec(abcd[0], abcd[1], abcd[2]);
@@ -500,27 +740,72 @@ void SuperLIO::Observe(){
             J.head<3>() = point_body_d.cross(nb);
             J.tail<3>() = normvec;
       
-            local_acc.HTVH += J * 1000 * J.transpose();
-            local_acc.HTVr -= J * 1000 * error;
+            if (!g_dynamic_filter_options.enable ||
+                !g_dynamic_filter_options.filter_pose_update) {
+              local_acc.dynamic_HTVH += J * 1000.0 * J.transpose();
+              local_acc.dynamic_HTVr -= J * 1000.0 * error;
+              continue;
+            }
+
+            const double robust_weight =
+              dynamic_filter_.cauchyWeight(point_residuals_[idx]);
+            const double fallback_omega =
+              g_dynamic_filter_options.observation_inv_variance * robust_weight;
+            if (std::isfinite(fallback_omega) &&
+                fallback_omega > std::numeric_limits<double>::epsilon()) {
+              local_acc.fallback_HTVH +=
+                J * fallback_omega * J.transpose();
+              local_acc.fallback_HTVr -= J * fallback_omega * error;
+            }
+
+            const double motion_weight =
+              dynamic_filter_.labelWeight(motion_labels_[idx]);
+            const double omega = fallback_omega * motion_weight;
+            if (!std::isfinite(omega) ||
+                omega <= std::numeric_limits<double>::epsilon()) {
+              continue;
+            }
+            local_acc.dynamic_HTVH += J * omega * J.transpose();
+            local_acc.dynamic_HTVr -= J * omega * error;
+            ++local_acc.dynamic_effective_points;
           }
         }
     });
 
-    M6d sum_HTVH = M6d::Zero();
-    V6d sum_HTVr = V6d::Zero();
+    M6d dynamic_HTVH = M6d::Zero();
+    V6d dynamic_HTVr = V6d::Zero();
+    M6d fallback_HTVH = M6d::Zero();
+    V6d fallback_HTVr = V6d::Zero();
+    std::size_t dynamic_effective_points = 0;
     for(const auto& local_acc : tls_acc){
-      sum_HTVH += local_acc.HTVH;
-      sum_HTVr += local_acc.HTVr;
+      dynamic_HTVH += local_acc.dynamic_HTVH;
+      dynamic_HTVr += local_acc.dynamic_HTVr;
+      fallback_HTVH += local_acc.fallback_HTVH;
+      fallback_HTVr += local_acc.fallback_HTVr;
+      dynamic_effective_points += local_acc.dynamic_effective_points;
     }
-    HTVH = sum_HTVH.cast<scalar>();
-    HTVr = sum_HTVr.cast<scalar>();
+
+    const bool dynamic_pose_filtering = g_dynamic_filter_options.enable &&
+        g_dynamic_filter_options.filter_pose_update;
+    const bool use_fallback = dynamic_pose_filtering &&
+        dynamic_effective_points < static_cast<std::size_t>(
+          g_dynamic_filter_options.min_effective_points);
+    tracking_degraded_this_frame_ =
+        tracking_degraded_this_frame_ || use_fallback;
+    if (use_fallback) {
+      HTVH = fallback_HTVH.cast<scalar>();
+      HTVr = fallback_HTVr.cast<scalar>();
+    } else {
+      HTVH = dynamic_HTVH.cast<scalar>();
+      HTVr = dynamic_HTVr.cast<scalar>();
+    }
 
     if(need_converge) return;
 
     int _effect_knn_num = 0;
     for(size_t i = 0; i < effect_knn_num_; ++i){
       int idx = effect_knn_idxs_[i];
-      if(!effect_knn_mask_[idx]) continue;
+      if(!knn_valid_mask_[idx]) continue;
       effect_knn_idxs_[_effect_knn_num] = idx;
       _effect_knn_num++;
     }
@@ -528,36 +813,187 @@ void SuperLIO::Observe(){
     // LOG(INFO) << "effect_knn_num_: " << effect_knn_num_ << ", _effect_knn_num: " << _effect_knn_num;
     effect_knn_num_ = _effect_knn_num;
 
-    iter_num++;
   });
 
-  frame_num_++;
+  const SE3 final_pose = kf_->GetSE3();
+  static_point_count_ = 0;
+  unknown_point_count_ = 0;
+  dynamic_candidate_count_ = 0;
+  dynamic_confirmed_count_ = 0;
+  for (std::size_t idx = 0; idx < ptsize; ++idx) {
+    if (plane_valid_mask_[idx]) {
+      const V3 point_world = final_pose * points_body_v3_[idx];
+      const auto& abcd = abcd_vec_[idx];
+      const double residual = abcd[0] * point_world[0] +
+          abcd[1] * point_world[1] + abcd[2] * point_world[2] + abcd[3];
+      point_residuals_[idx] = residual;
+      scalar residual_scalar = static_cast<scalar>(residual);
+      residual_inlier_mask_[idx] = compute_error(
+        abcd, point_world, point_ranges_[idx], residual_scalar);
+      motion_labels_[idx] = dynamic_filter_.classify(
+        true, residual, static_cast<double>(point_ranges_[idx]));
+      motion_evidence_[idx].residual_inlier = residual_inlier_mask_[idx] != 0;
+      motion_evidence_[idx].residual = residual;
+      motion_evidence_[idx].range = static_cast<double>(point_ranges_[idx]);
+      motion_evidence_[idx].label = motion_labels_[idx];
+    } else {
+      motion_labels_[idx] = MotionLabel::UNKNOWN;
+      motion_evidence_[idx].label = MotionLabel::UNKNOWN;
+    }
+
+    switch (motion_labels_[idx]) {
+      case MotionLabel::STATIC_CONFIRMED:
+        ++static_point_count_;
+        break;
+      case MotionLabel::DYNAMIC_CANDIDATE:
+        ++dynamic_candidate_count_;
+        break;
+      case MotionLabel::DYNAMIC_CONFIRMED:
+        ++dynamic_confirmed_count_;
+        break;
+      case MotionLabel::UNKNOWN:
+      default:
+        ++unknown_point_count_;
+        break;
+    }
+  }
+  const std::size_t dynamic_points =
+      dynamic_candidate_count_ + dynamic_confirmed_count_;
+  dynamic_ratio_ = ptsize == 0
+      ? 0.0
+      : static_cast<double>(dynamic_points) / static_cast<double>(ptsize);
+
 }
 
 
 void SuperLIO::UpdateMap() {
   const size_t ptsize = ds_undistort_->size();
-  if (ptsize == 0) return;
-  
+  newly_promoted_points_world_.clear();
+  if (ptsize == 0) {
+    points_world_v3_.clear();
+    return;
+  }
+
+  transformCurrentPointsToWorld();
+  updateMapFromCurrentWorldPoints();
+}
+
+
+void SuperLIO::transformCurrentPointsToWorld() {
+  const std::size_t ptsize = points_body_v3_.size();
   last_pose_ = kf_->GetSE3();
   points_world_v3_.resize(ptsize);
-  
+
   const auto R = last_pose_.R_;
   const auto t = last_pose_.t_;
-  
+
   for (size_t i = 0; i < ptsize; ++i) {
     const auto& pt = points_body_v3_[i];
     points_world_v3_[i] = R * pt + t;
   }
-  
-  ivox_->insert(points_world_v3_);
+}
 
+
+void SuperLIO::updateMapFromCurrentWorldPoints() {
+  if (!g_dynamic_filter_options.enable ||
+      !g_dynamic_filter_options.filter_map_update) {
+    ivox_->insert(points_world_v3_);
+    return;
+  }
+
+  if (tracking_degraded_this_frame_) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [DynamicFilter] Tracking fallback active; skip map update for frame "
+                 << processing_frame_id_ << RESET;
+    return;
+  }
+
+  if (points_world_v3_.size() != motion_labels_.size()) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [DynamicFilter] Label/point size mismatch; skip map update."
+                 << RESET;
+    return;
+  }
+
+  VV3 static_points_world;
+  VV3 unknown_points_world;
+  static_points_world.reserve(static_point_count_);
+  unknown_points_world.reserve(unknown_point_count_);
+  for (std::size_t i = 0; i < points_world_v3_.size(); ++i) {
+    switch (motion_labels_[i]) {
+      case MotionLabel::STATIC_CONFIRMED:
+        static_points_world.push_back(points_world_v3_[i]);
+        break;
+      case MotionLabel::UNKNOWN:
+        unknown_points_world.push_back(points_world_v3_[i]);
+        break;
+      case MotionLabel::DYNAMIC_CANDIDATE:
+      case MotionLabel::DYNAMIC_CONFIRMED:
+        break;
+    }
+  }
+
+  newly_promoted_points_world_ = temporal_voxel_map_.update(
+      processing_frame_id_, unknown_points_world);
+  static_points_world.insert(static_points_world.end(),
+      newly_promoted_points_world_.begin(),
+      newly_promoted_points_world_.end());
+  ivox_->insert(static_points_world);
+
+}
+
+
+void SuperLIO::publishDynamicDebugClouds() {
+  if (!g_dynamic_filter_options.enable ||
+      !g_dynamic_filter_options.publish_debug_clouds) {
+    return;
+  }
+  if (points_world_v3_.size() != motion_labels_.size() ||
+      ds_undistort_->size() != motion_labels_.size()) {
+    LOG(WARNING) << YELLOW
+                 << " ---> [DynamicFilter] Label/point size mismatch; skip debug clouds."
+                 << RESET;
+    return;
+  }
+
+  CloudPtr static_cloud(new PointCloudType());
+  CloudPtr dynamic_cloud(new PointCloudType());
+  CloudPtr unknown_cloud(new PointCloudType());
+  static_cloud->reserve(static_point_count_);
+  dynamic_cloud->reserve(
+      dynamic_candidate_count_ + dynamic_confirmed_count_);
+  unknown_cloud->reserve(unknown_point_count_);
+
+  for (std::size_t i = 0; i < motion_labels_.size(); ++i) {
+    PointType point = ds_undistort_->points[i];
+    point.x = points_world_v3_[i][0];
+    point.y = points_world_v3_[i][1];
+    point.z = points_world_v3_[i][2];
+    switch (motion_labels_[i]) {
+      case MotionLabel::STATIC_CONFIRMED:
+        static_cloud->push_back(point);
+        break;
+      case MotionLabel::DYNAMIC_CANDIDATE:
+      case MotionLabel::DYNAMIC_CONFIRMED:
+        dynamic_cloud->push_back(point);
+        break;
+      case MotionLabel::UNKNOWN:
+      default:
+        unknown_cloud->push_back(point);
+        break;
+    }
+  }
+
+  data_wrapper_->pub_dynamic_debug_clouds(
+      static_cloud, dynamic_cloud, unknown_cloud,
+      static_cast<float>(dynamic_ratio_), measures_.lidar.end_time);
 }
 
 
 void SuperLIO::Output(){
   auto state = kf_->GetNavState();
   data_wrapper_->pub_odom(state);  
+  publishDynamicDebugClouds();
 
   Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();
   transformation.block<3, 3>(0, 0) = state.R.R_.cast<float>();

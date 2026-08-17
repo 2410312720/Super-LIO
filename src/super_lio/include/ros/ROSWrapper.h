@@ -17,6 +17,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float32.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -68,6 +69,11 @@ public:
 
   void pub_odom(const NavState&);
   void pub_cloud_world(const BASIC::CloudPtr& pc, double time);
+  void pub_dynamic_debug_clouds(
+      const BASIC::CloudPtr& static_cloud,
+      const BASIC::CloudPtr& dynamic_cloud,
+      const BASIC::CloudPtr& unknown_cloud,
+      float dynamic_ratio, double time);
   void pub_cloud2planner(const BASIC::CloudPtr& pc, double time);
   void pub_cloud_world_pose(const BASIC::CloudPtr& pc, 
                             const NavState& state);
@@ -122,6 +128,10 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_robo_odom_;  /// IMU fre   --> Robot frame
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_world_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_static_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_dynamic_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_unknown_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_dynamic_ratio_;
 };
 
 } // namespace END.

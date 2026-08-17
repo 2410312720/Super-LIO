@@ -35,10 +35,10 @@ private:
   BASIC::CloudPtr init_obs_data_;
   bool flg_get_init_guess_ = false;
   BASIC::SE3 re_init_pose_;
+  int map_update_delay_frames_ = 100;
 };
 
 } // namespace END.
 
 #endif
-
 
