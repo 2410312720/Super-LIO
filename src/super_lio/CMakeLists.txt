@@ -129,6 +129,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_dynamic_filter test/test_dynamic_filter.cpp)
   target_link_libraries(test_dynamic_filter lio)
+
+  ament_add_gtest(test_initial_pose test/test_initial_pose.cpp)
+  target_link_libraries(test_initial_pose lio)
 endif()
 
 ament_package()

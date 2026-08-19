@@ -68,6 +68,9 @@ namespace LI2Sup{
   /// for planner
   bool g_planner_enable;
 
+  /// optional global-frame alignment for normal Super-LIO mode
+  InitialPoseOptions g_initial_pose_options;
+
   ResidualType g_residual_type = PROB;
 
   /// for relocation

@@ -266,8 +266,14 @@ bool SuperLIO::kf_init(){
   float imu_scale = g_gravity_norm / mean_acce.norm();
   kf_->SetInitialConditions(options, mean_gyro, V3::Zero(), imu_scale, ref_gravity);
   auto state = kf_->GetSysState();
-  state.R = SO3(rot);
-  state.p = g_odom_robo.t_;        // By default, the robot frame is used as the reference origin.
+  // First preserve Super-LIO's original local initialization, then optionally
+  // place that complete local frame in an externally defined world frame.
+  // This is intentionally independent of relocation's registration guess.
+  const SE3 local_initial_pose(SO3(rot), g_odom_robo.t_);
+  const SE3 aligned_initial_pose =
+      applyInitialPoseAlignment(local_initial_pose, g_initial_pose_options);
+  state.R = SO3(aligned_initial_pose.R_);
+  state.p = aligned_initial_pose.t_;
   state.timestamp = measures_.imu.back().secs;
   kf_->SetX(state);
   sys_init_pose_ = kf_->GetSE3();

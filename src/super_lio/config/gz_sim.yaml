@@ -29,6 +29,12 @@
                               0.5000000,  0.0,    0.8660254]
     lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
+    # Optional transform from Super-LIO's local world into an external world.
+    # Keep disabled in the shared simulation profile; environment-specific
+    # launch files may override it without affecting relocation parameters.
+    lio.initial_pose.enable: false
+    lio.initial_pose.pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
     lio.hash_map.hash_capacity: 2000000
     lio.hash_map.vox_resolution: 0.5
 

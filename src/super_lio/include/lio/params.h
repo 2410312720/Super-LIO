@@ -21,6 +21,7 @@
 #include "basic/alias.h"
 #include "basic/Manifold.h"
 #include "lio/dynamic_filter.h"
+#include "lio/initial_pose.h"
 
 
 namespace LI2Sup{
@@ -85,6 +86,9 @@ namespace LI2Sup{
 
   /// for planner
   extern bool g_planner_enable;
+
+  /// optional global-frame alignment for normal Super-LIO mode
+  extern InitialPoseOptions g_initial_pose_options;
 
   /// Define the hybrid residual formulation.
   enum ResidualType{

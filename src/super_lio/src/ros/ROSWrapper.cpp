@@ -2,6 +2,9 @@
 #include "ros/ROSWrapper.h"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 
+#include <cmath>
+#include <stdexcept>
+
 
 using namespace BASIC;
 
@@ -189,6 +192,48 @@ void LoadParamFromRos(rclcpp::Node& node)
 
   node.declare_parameter<bool>("lio.output.planner", false);
   node.get_parameter("lio.output.planner", g_planner_enable);
+
+  // ================= normal-mode world alignment =================
+  node.declare_parameter<bool>("lio.initial_pose.enable", false);
+  node.get_parameter(
+      "lio.initial_pose.enable", g_initial_pose_options.enabled);
+
+  std::vector<double> initial_pose;
+  node.declare_parameter<std::vector<double>>(
+      "lio.initial_pose.pose", std::vector<double>(6, 0.0));
+  node.get_parameter("lio.initial_pose.pose", initial_pose);
+
+  if (initial_pose.size() != 6) {
+    throw std::invalid_argument(
+        "lio.initial_pose.pose must contain "
+        "[x, y, z, roll_deg, pitch_deg, yaw_deg]");
+  }
+  for (const double value : initial_pose) {
+    if (!std::isfinite(value)) {
+      throw std::invalid_argument(
+          "lio.initial_pose.pose contains a non-finite value");
+    }
+  }
+
+  const Eigen::Matrix3d initial_rotation =
+      (Eigen::AngleAxisd(initial_pose[5] * M_PI / 180.0,
+                         Eigen::Vector3d::UnitZ()) *
+       Eigen::AngleAxisd(initial_pose[4] * M_PI / 180.0,
+                         Eigen::Vector3d::UnitY()) *
+       Eigen::AngleAxisd(initial_pose[3] * M_PI / 180.0,
+                         Eigen::Vector3d::UnitX()))
+          .toRotationMatrix();
+  const M3 initial_rotation_scalar = initial_rotation.cast<scalar>();
+  g_initial_pose_options.world_from_lio = SE3(
+      initial_rotation_scalar,
+      V3(initial_pose[0], initial_pose[1], initial_pose[2]));
+
+  LOG(INFO) << GREEN << " ---> [Param] initial_pose/enable: "
+            << (g_initial_pose_options.enabled ? "true" : "false")
+            << ", pose: [" << initial_pose[0] << ", " << initial_pose[1]
+            << ", " << initial_pose[2] << ", " << initial_pose[3]
+            << ", " << initial_pose[4] << ", " << initial_pose[5] << "]"
+            << RESET;
 
   node.declare_parameter<bool>("lio.output.plan_env_world", false);
   node.get_parameter("lio.output.plan_env_world", g_2_plan_env_world);

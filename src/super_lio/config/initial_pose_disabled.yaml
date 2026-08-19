@@ -1,0 +1,4 @@
+/**:
+  ros__parameters:
+    lio.initial_pose.enable: false
+    lio.initial_pose.pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
