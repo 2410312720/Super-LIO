@@ -140,6 +140,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_covariance_utils test/test_covariance_utils.cpp)
   target_include_directories(test_covariance_utils PRIVATE include)
   target_link_libraries(test_covariance_utils Eigen3::Eigen)
+
+  ament_add_gtest(test_undistortion_utils test/test_undistortion_utils.cpp)
+  target_include_directories(test_undistortion_utils PRIVATE include)
+  target_link_libraries(test_undistortion_utils Eigen3::Eigen)
 endif()
 
 ament_package()
