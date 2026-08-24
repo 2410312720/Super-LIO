@@ -49,6 +49,9 @@
     lio.output.map: true
     lio.output.dense: true
     lio.output.pub_step: 1
+    # Delay high-rate odometry briefly so a scan arriving after its endpoint
+    # can correct the still-pending IMU outputs before they reach PX4.
+    lio.output.forward_holdback_ms: 20.0
 
     lio.eva.timer: true
     lio.eva.publish_diagnostics: true

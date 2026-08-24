@@ -114,6 +114,15 @@ void ESKF::Update() {
 }
 
 
+void ESKF::SynchronizeForwardState(const IMUData& imu_at_state_time) {
+  fw_R_ = R_;
+  fw_p_ = p_;
+  fw_v_ = v_;
+  forward_time_ = imu_at_state_time.secs;
+  forward_last_imu_ = imu_at_state_time;
+}
+
+
 bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot){
   if(!init_) {
     return false;

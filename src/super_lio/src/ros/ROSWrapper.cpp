@@ -2,6 +2,7 @@
 #include "ros/ROSWrapper.h"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -41,6 +42,53 @@ void fillOdomCovariance(nav_msgs::msg::Odometry& odom, const ESKF::COV& cov)
           static_cast<double>(cov(kEskfVelStart + r, kEskfVelStart + c));
     }
   }
+}
+
+void fillForwardOdometry(
+    nav_msgs::msg::Odometry& odom_imu,
+    nav_msgs::msg::Odometry& odom_robo,
+    const DynamicState& imu_state,
+    const DynamicState& robo_state,
+    const ESKF::COV& covariance)
+{
+  odom_imu.pose.pose.position.x = imu_state.p(0);
+  odom_imu.pose.pose.position.y = imu_state.p(1);
+  odom_imu.pose.pose.position.z = imu_state.p(2);
+
+  Quat imu_quaternion(imu_state.R);
+  imu_quaternion.normalize();
+  odom_imu.pose.pose.orientation.x = imu_quaternion.x();
+  odom_imu.pose.pose.orientation.y = imu_quaternion.y();
+  odom_imu.pose.pose.orientation.z = imu_quaternion.z();
+  odom_imu.pose.pose.orientation.w = imu_quaternion.w();
+
+  odom_imu.twist.twist.linear.x = imu_state.v(0);
+  odom_imu.twist.twist.linear.y = imu_state.v(1);
+  odom_imu.twist.twist.linear.z = imu_state.v(2);
+  odom_imu.twist.twist.angular.x = imu_state.w(0);
+  odom_imu.twist.twist.angular.y = imu_state.w(1);
+  odom_imu.twist.twist.angular.z = imu_state.w(2);
+
+  odom_robo.pose.pose.position.x = robo_state.p(0);
+  odom_robo.pose.pose.position.y = robo_state.p(1);
+  odom_robo.pose.pose.position.z = robo_state.p(2);
+
+  Quat robot_quaternion(robo_state.R);
+  robot_quaternion.normalize();
+  odom_robo.pose.pose.orientation.x = robot_quaternion.x();
+  odom_robo.pose.pose.orientation.y = robot_quaternion.y();
+  odom_robo.pose.pose.orientation.z = robot_quaternion.z();
+  odom_robo.pose.pose.orientation.w = robot_quaternion.w();
+
+  odom_robo.twist.twist.linear.x = robo_state.v(0);
+  odom_robo.twist.twist.linear.y = robo_state.v(1);
+  odom_robo.twist.twist.linear.z = robo_state.v(2);
+  odom_robo.twist.twist.angular.x = robo_state.w(0);
+  odom_robo.twist.twist.angular.y = robo_state.w(1);
+  odom_robo.twist.twist.angular.z = robo_state.w(2);
+
+  fillOdomCovariance(odom_imu, covariance);
+  fillOdomCovariance(odom_robo, covariance);
 }
 }  // namespace
 
@@ -282,6 +330,15 @@ void LoadParamFromRos(rclcpp::Node& node)
 
   node.declare_parameter<int>("lio.output.pub_step", 0);
   node.get_parameter("lio.output.pub_step", g_pub_step);
+
+  node.declare_parameter<double>("lio.output.forward_holdback_ms", 20.0);
+  node.get_parameter(
+      "lio.output.forward_holdback_ms", g_forward_output_holdback_ms);
+  if (!std::isfinite(g_forward_output_holdback_ms) ||
+      g_forward_output_holdback_ms < 0.0) {
+    throw std::invalid_argument(
+        "lio.output.forward_holdback_ms must be finite and non-negative");
+  }
 
   // ================= relocation =================
   node.declare_parameter<bool>("lio.relocation.update_map", false);
@@ -537,6 +594,11 @@ void ROSWrapper::setupIO(){
             "/lio/diagnostics/scan", rclcpp::QoS(50).reliable());
   }
 
+  forward_output_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(50),
+      [this]() { flushPendingForwardOdometryAfterIdle(); },
+      cb_sensor_);
+
   tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(this);
 }
@@ -623,7 +685,96 @@ void ROSWrapper::pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics)
 }
 
 
+void ROSWrapper::notifyMeasurementReady()
+{
+  if (measurement_ready_callback_) {
+    measurement_ready_callback_();
+  }
+}
+
+
+void ROSWrapper::enqueueForwardOdometry(
+    const sensor_msgs::msg::Imu& source,
+    const DynamicState& imu_state,
+    const DynamicState& robot_state)
+{
+  PendingForwardOdometry pending;
+  pending.timestamp = imu_state.time;
+  pending.imu.header.stamp = source.header.stamp;
+  pending.robot.header.stamp = source.header.stamp;
+  pending.imu.header.frame_id = "world";
+  pending.robot.header.frame_id = "world";
+  fillForwardOdometry(
+      pending.imu, pending.robot, imu_state, robot_state, eskf_->GetCov());
+  pending_forward_odometry_.push_back(std::move(pending));
+}
+
+
+void ROSWrapper::updatePendingForwardOdometry(
+    const double timestamp,
+    const DynamicState& imu_state,
+    const DynamicState& robot_state)
+{
+  const auto match = std::find_if(
+      pending_forward_odometry_.begin(), pending_forward_odometry_.end(),
+      [timestamp](const PendingForwardOdometry& pending) {
+        return pending.timestamp == timestamp;
+      });
+  if (match != pending_forward_odometry_.end()) {
+    fillForwardOdometry(
+        match->imu, match->robot, imu_state, robot_state, eskf_->GetCov());
+  }
+}
+
+
+void ROSWrapper::flushPendingForwardOdometryThrough(const double imu_timestamp)
+{
+  const double cutoff =
+      imu_timestamp - g_forward_output_holdback_ms * 1e-3;
+  while (!pending_forward_odometry_.empty() &&
+         pending_forward_odometry_.front().timestamp <= cutoff) {
+    pub_imu_odom_->publish(pending_forward_odometry_.front().imu);
+    pub_robo_odom_->publish(pending_forward_odometry_.front().robot);
+    pending_forward_odometry_.pop_front();
+  }
+}
+
+
+void ROSWrapper::flushPendingForwardOdometryAfterIdle()
+{
+  if (pending_forward_odometry_.empty() ||
+      last_imu_arrival_.time_since_epoch().count() == 0) {
+    return;
+  }
+  const auto idle_time = std::chrono::steady_clock::now() - last_imu_arrival_;
+  if (idle_time < std::chrono::duration<double, std::milli>(
+                      g_forward_output_holdback_ms)) {
+    return;
+  }
+  while (!pending_forward_odometry_.empty()) {
+    pub_imu_odom_->publish(pending_forward_odometry_.front().imu);
+    pub_robo_odom_->publish(pending_forward_odometry_.front().robot);
+    pending_forward_odometry_.pop_front();
+  }
+}
+
+
+void ROSWrapper::synchronizeForwardState(
+    const IMUData& imu_at_scan_end,
+    const std::deque<IMUData>& imu_after_scan_end)
+{
+  eskf_->SynchronizeForwardState(imu_at_scan_end);
+  DynamicState imu_state, robot_state;
+  for (const auto& imu : imu_after_scan_end) {
+    if (eskf_->Predict(imu, imu_state, robot_state)) {
+      updatePendingForwardOdometry(imu.secs, imu_state, robot_state);
+    }
+  }
+}
+
+
 void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
+  last_imu_arrival_ = std::chrono::steady_clock::now();
   IMUData data;
   data.secs = stampToSec(msg->header.stamp);
   data.acc  = V3(msg->linear_acceleration.x,
@@ -636,6 +787,7 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
   if (data.secs < last_timestamp_imu_) {
     LOG(WARNING) << "imu loop back, clear buffer";
     imu_buffer_.clear();
+    pending_forward_odometry_.clear();
     imu_buffer_.push_back(data);
     last_timestamp_imu_ = data.secs;
     // eskf_->Reset();   // todo:
@@ -645,63 +797,14 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
   imu_buffer_.push_back(data);
   last_timestamp_imu_ = data.secs;
 
+  // If this sample completes the IMU bracket for a pending scan, apply that
+  // scan correction before publishing the sample's high-rate odometry.
+  notifyMeasurementReady();
+
   DynamicState imu_state, robo_state;
   if(eskf_->Predict(data, imu_state, robo_state)){
-    nav_msgs::msg::Odometry odom_imu, odom_robo;
-    const auto cov = eskf_->GetCov();
-
-    {
-      odom_imu.pose.pose.position.x = imu_state.p(0);
-      odom_imu.pose.pose.position.y = imu_state.p(1);
-      odom_imu.pose.pose.position.z = imu_state.p(2);
-
-      Quat q(imu_state.R);
-      q.normalize();
-
-      odom_imu.pose.pose.orientation.x = q.x();
-      odom_imu.pose.pose.orientation.y = q.y();
-      odom_imu.pose.pose.orientation.z = q.z();
-      odom_imu.pose.pose.orientation.w = q.w();
-
-      odom_imu.twist.twist.linear.x = imu_state.v(0);
-      odom_imu.twist.twist.linear.y = imu_state.v(1);
-      odom_imu.twist.twist.linear.z = imu_state.v(2);
-
-      odom_imu.twist.twist.angular.x = imu_state.w(0);
-      odom_imu.twist.twist.angular.y = imu_state.w(1);
-      odom_imu.twist.twist.angular.z = imu_state.w(2);
-    }
-
-    {
-      odom_robo.pose.pose.position.x = robo_state.p(0);
-      odom_robo.pose.pose.position.y = robo_state.p(1);
-      odom_robo.pose.pose.position.z = robo_state.p(2);
-
-      Quat q(robo_state.R);
-      q.normalize();
-
-      odom_robo.pose.pose.orientation.x = q.x();
-      odom_robo.pose.pose.orientation.y = q.y();
-      odom_robo.pose.pose.orientation.z = q.z();
-      odom_robo.pose.pose.orientation.w = q.w();
-
-      odom_robo.twist.twist.linear.x = robo_state.v(0);
-      odom_robo.twist.twist.linear.y = robo_state.v(1);
-      odom_robo.twist.twist.linear.z = robo_state.v(2);
-
-      odom_robo.twist.twist.angular.x = robo_state.w(0);
-      odom_robo.twist.twist.angular.y = robo_state.w(1);
-      odom_robo.twist.twist.angular.z = robo_state.w(2);
-    }
-
-    odom_imu.header.stamp = msg->header.stamp;
-    odom_robo.header.stamp = msg->header.stamp;
-    odom_imu.header.frame_id = "world";
-    odom_robo.header.frame_id = "world";
-    fillOdomCovariance(odom_imu, cov);
-    fillOdomCovariance(odom_robo, cov);
-    pub_imu_odom_->publish(odom_imu);
-    pub_robo_odom_->publish(odom_robo);
+    enqueueForwardOdometry(*msg, imu_state, robo_state);
+    flushPendingForwardOdometryThrough(data.secs);
   }
 }
 
@@ -730,6 +833,7 @@ void ROSWrapper::livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
   lidar_data.end_time   = lidar_data.start_time + offset_time;
   last_lidar_msg_stamp_ = lidar_data.start_time;
   lidar_buffer_.push_back(lidar_data);
+  notifyMeasurementReady();
 }
 
 
@@ -841,6 +945,7 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
   if (lidar_data.pc->empty()) return;
   last_lidar_msg_stamp_ = lidar_data.start_time;
   lidar_buffer_.push_back(lidar_data);
+  notifyMeasurementReady();
 }
 
 
@@ -866,6 +971,7 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
 
   meas.imu.clear();
   meas.imu_at_lidar_end.reset();
+  meas.imu_after_lidar_end.clear();
   while (!imu_buffer_.empty() &&
          imu_buffer_.front().secs <= meas.lidar.end_time) {
     meas.imu.push_back(imu_buffer_.front());
@@ -879,6 +985,7 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
     meas.imu_at_lidar_end = interpolateImuAtTime(
         meas.imu.back(), imu_buffer_.front(), meas.lidar.end_time);
   }
+  meas.imu_after_lidar_end.assign(imu_buffer_.begin(), imu_buffer_.end());
 
   last_timestamp_lidar_ = meas.lidar.end_time;
   lidar_buffer_.pop_front();

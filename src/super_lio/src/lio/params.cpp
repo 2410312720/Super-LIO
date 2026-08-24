@@ -70,6 +70,7 @@ namespace LI2Sup{
   bool g_visual_map = true;
   bool g_visual_dense = false;
   int  g_pub_step;
+  double g_forward_output_holdback_ms = 20.0;
 
   /// for planner
   bool g_planner_enable;

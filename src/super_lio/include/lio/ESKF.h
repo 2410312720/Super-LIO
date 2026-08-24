@@ -92,6 +92,7 @@ public:
 
   bool init_ = false;
   bool Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& state_robot);
+  void SynchronizeForwardState(const IMUData& imu_at_state_time);
 
 private:
   void BuildNoise(const Options& options);

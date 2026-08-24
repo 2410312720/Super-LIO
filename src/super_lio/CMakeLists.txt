@@ -152,6 +152,10 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_observation_utils test/test_observation_utils.cpp)
   target_include_directories(test_observation_utils PRIVATE include)
+
+  ament_add_gtest(test_forward_state_sync test/test_forward_state_sync.cpp)
+  target_include_directories(test_forward_state_sync PRIVATE include)
+  target_link_libraries(test_forward_state_sync lio Eigen3::Eigen)
 endif()
 
 ament_package()

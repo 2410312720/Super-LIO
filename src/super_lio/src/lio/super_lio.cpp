@@ -224,10 +224,9 @@ void SuperLIO::stateWaitMapInit()
 }
 
 void SuperLIO::process(){
-  if(!data_wrapper_->sync_measure(measures_)){
-    return;
+  while(data_wrapper_->sync_measure(measures_)){
+    (this->*state_fn_)();
   }
-  (this->*state_fn_)();
 }
 
 
@@ -929,6 +928,21 @@ void SuperLIO::Observe(){
 
     iter_num++;
   }, iteration_diagnostic);
+
+  // The scan update rewinds the high-rate nominal state to the scan end. Reset
+  // its IMU integration boundary to the exact same timestamp, then replay any
+  // later raw IMUs that arrived before the scan callback was serviced.
+  const IMUData* imu_at_scan_end = nullptr;
+  if (measures_.imu_at_lidar_end) {
+    imu_at_scan_end = &*measures_.imu_at_lidar_end;
+  } else if (!measures_.imu.empty() &&
+             measures_.imu.back().secs == measures_.lidar.end_time) {
+    imu_at_scan_end = &measures_.imu.back();
+  }
+  if (imu_at_scan_end != nullptr) {
+    data_wrapper_->synchronizeForwardState(
+        *imu_at_scan_end, measures_.imu_after_lidar_end);
+  }
 
   if (g_publish_diagnostics) {
     const SysState state_after = kf_->GetSysState();

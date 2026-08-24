@@ -19,11 +19,12 @@ int main(int argc, char** argv){
   lio->setROSWrapper(data_wrapper);
   lio->init();
 
-  auto timer = data_wrapper->create_wall_timer(
-    std::chrono::milliseconds(2),
-    [lio]() { lio->process(); },
-    data_wrapper->getSensorCallbackGroup()
-  );
+  std::weak_ptr<SuperLIO> weak_lio = lio;
+  data_wrapper->setMeasurementReadyCallback([weak_lio]() {
+    if (auto active_lio = weak_lio.lock()) {
+      active_lio->process();
+    }
+  });
 
   rclcpp::spin(data_wrapper);
 

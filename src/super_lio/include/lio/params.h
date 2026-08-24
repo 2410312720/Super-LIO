@@ -90,6 +90,7 @@ namespace LI2Sup{
   extern bool g_visual_map;
   extern bool g_visual_dense;
   extern int  g_pub_step;
+  extern double g_forward_output_holdback_ms;
 
   /// for planner
   extern bool g_planner_enable;

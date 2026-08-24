@@ -7,6 +7,8 @@
 #include <deque>
 #include <vector>
 #include <execution>
+#include <functional>
+#include <chrono>
 
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
@@ -59,10 +61,14 @@ public:
   bool sync_measure(MeasureGroup&);
 
   void setESKF(ESKF::Ptr& eskf) { eskf_ = eskf;}
+  void setMeasurementReadyCallback(std::function<void()> callback) {
+    measurement_ready_callback_ = std::move(callback);
+  }
 
   void clear(){
     lidar_buffer_.clear();
     imu_buffer_.clear();
+    pending_forward_odometry_.clear();
     lidar_pushed_ = false;
     last_timestamp_imu_ = -1.0;
     last_timestamp_lidar_ = -1.0;
@@ -85,6 +91,9 @@ public:
                             const NavState& state);  
   void pub_processing_time(double time, double current_time, double mean_time, double std_time);
   void pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics);
+  void synchronizeForwardState(
+      const IMUData& imu_at_scan_end,
+      const std::deque<IMUData>& imu_after_scan_end);
 
   void set_global_map(const BASIC::CloudPtr& global_map);
 
@@ -101,6 +110,17 @@ private:
 
   void setupParams();
   void setupIO();
+  void notifyMeasurementReady();
+  void enqueueForwardOdometry(
+      const sensor_msgs::msg::Imu& source,
+      const DynamicState& imu_state,
+      const DynamicState& robot_state);
+  void updatePendingForwardOdometry(
+      double timestamp,
+      const DynamicState& imu_state,
+      const DynamicState& robot_state);
+  void flushPendingForwardOdometryThrough(double imu_timestamp);
+  void flushPendingForwardOdometryAfterIdle();
 
 private:
   rclcpp::CallbackGroup::SharedPtr cb_sensor_;
@@ -116,6 +136,16 @@ private:
   double last_lidar_msg_stamp_ = -1.0;
 
   ESKF::Ptr eskf_{nullptr};
+  std::function<void()> measurement_ready_callback_;
+
+  struct PendingForwardOdometry {
+    double timestamp = 0.0;
+    nav_msgs::msg::Odometry imu;
+    nav_msgs::msg::Odometry robot;
+  };
+  std::deque<PendingForwardOdometry> pending_forward_odometry_;
+  std::chrono::steady_clock::time_point last_imu_arrival_;
+  rclcpp::TimerBase::SharedPtr forward_output_timer_;
 
   nav_msgs::msg::Path path_;
   geometry_msgs::msg::PoseStamped msg2uav_;

@@ -154,6 +154,10 @@ struct MeasureGroup {
   // Synthetic sample at lidar.end_time, interpolated from the last sample in
   // imu and the first later raw sample. The later raw sample remains buffered.
   std::optional<IMUData> imu_at_lidar_end;
+  // Raw samples that had already arrived after lidar.end_time when this scan
+  // became processable. They remain in the ROS input buffer for the next scan,
+  // and are also replayed on the corrected high-rate forward state.
+  std::deque<IMUData> imu_after_lidar_end;
 };
 
 
