@@ -4,6 +4,7 @@
 
 #include <queue>
 #include <deque>
+#include <optional>
 #include <string>
 
 #include "basic/alias.h"
@@ -120,6 +121,24 @@ struct IMUData{
 };
 
 
+inline std::optional<IMUData> interpolateImuAtTime(
+    const IMUData& before, const IMUData& after, const double target_time)
+{
+  if (after.secs <= before.secs || target_time < before.secs ||
+      target_time > after.secs) {
+    return std::nullopt;
+  }
+
+  const double alpha =
+      (target_time - before.secs) / (after.secs - before.secs);
+  IMUData interpolated;
+  interpolated.secs = target_time;
+  interpolated.acc = before.acc + alpha * (after.acc - before.acc);
+  interpolated.gyr = before.gyr + alpha * (after.gyr - before.gyr);
+  return interpolated;
+}
+
+
 struct LidarData
 {
   double start_time = 0.0;
@@ -132,6 +151,9 @@ struct LidarData
 struct MeasureGroup {
   LidarData lidar;
   std::deque<IMUData> imu;
+  // Synthetic sample at lidar.end_time, interpolated from the last sample in
+  // imu and the first later raw sample. The later raw sample remains buffered.
+  std::optional<IMUData> imu_at_lidar_end;
 };
 
 

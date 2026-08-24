@@ -837,13 +837,20 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
     return false;
   }
 
-  double imu_time = imu_buffer_.front().secs;
   meas.imu.clear();
-  while ((!imu_buffer_.empty()) && (imu_time < meas.lidar.end_time)) {
-    imu_time = imu_buffer_.front().secs;
-    if (imu_time > meas.lidar.end_time) break;
+  meas.imu_at_lidar_end.reset();
+  while (!imu_buffer_.empty() &&
+         imu_buffer_.front().secs <= meas.lidar.end_time) {
     meas.imu.push_back(imu_buffer_.front());
     imu_buffer_.pop_front();
+  }
+
+  if (!meas.imu.empty() && !imu_buffer_.empty() &&
+      meas.imu.back().secs < meas.lidar.end_time) {
+    // Use the first sample after the scan to interpolate an exact end state,
+    // but retain that raw sample for normal propagation on the next scan.
+    meas.imu_at_lidar_end = interpolateImuAtTime(
+        meas.imu.back(), imu_buffer_.front(), meas.lidar.end_time);
   }
 
   last_timestamp_lidar_ = meas.lidar.end_time;

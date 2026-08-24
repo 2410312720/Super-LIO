@@ -144,6 +144,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_undistortion_utils test/test_undistortion_utils.cpp)
   target_include_directories(test_undistortion_utils PRIVATE include)
   target_link_libraries(test_undistortion_utils Eigen3::Eigen)
+
+  ament_add_gtest(test_imu_interpolation test/test_imu_interpolation.cpp)
+  target_include_directories(test_imu_interpolation PRIVATE include)
+  target_link_libraries(test_imu_interpolation Eigen3::Eigen)
+  ament_target_dependencies(test_imu_interpolation basic)
 endif()
 
 ament_package()

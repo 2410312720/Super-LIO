@@ -626,6 +626,10 @@ void SuperLIO::Propagation_Undistort(){
     kf_->Predict(imu);
     propagate_states_.emplace_back(kf_->GetDynamicState());
   }
+  if (measures_.imu_at_lidar_end) {
+    kf_->Predict(*measures_.imu_at_lidar_end);
+    propagate_states_.emplace_back(kf_->GetDynamicState());
+  }
 
   static const M3 TLI_R = g_lidar_imu.R_;
   static const V3 TLI_t = g_lidar_imu.t_;
