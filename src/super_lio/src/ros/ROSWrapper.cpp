@@ -544,8 +544,30 @@ void ROSWrapper::pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics)
       diagnostics.iteration_rotation_correction_rad;
   message.iteration_position_correction_m =
       diagnostics.iteration_position_correction_m;
+  message.iteration_state_correction = diagnostics.iteration_state_correction;
+  message.scan_rotation_correction_vector_rad =
+      diagnostics.scan_rotation_correction_vector_rad;
+  message.scan_position_correction_vector_m =
+      diagnostics.scan_position_correction_vector_m;
   message.scan_rotation_correction_rad = diagnostics.scan_rotation_correction_rad;
   message.scan_position_correction_m = diagnostics.scan_position_correction_m;
+  message.state_orientation_before_xyzw =
+      diagnostics.state_orientation_before_xyzw;
+  message.state_orientation_after_xyzw =
+      diagnostics.state_orientation_after_xyzw;
+  message.state_position_before_m = diagnostics.state_position_before_m;
+  message.state_position_after_m = diagnostics.state_position_after_m;
+  message.state_velocity_before_mps = diagnostics.state_velocity_before_mps;
+  message.state_velocity_after_mps = diagnostics.state_velocity_after_mps;
+  message.state_gyro_bias_before_radps =
+      diagnostics.state_gyro_bias_before_radps;
+  message.state_gyro_bias_after_radps = diagnostics.state_gyro_bias_after_radps;
+  message.state_accel_bias_before_mps2 =
+      diagnostics.state_accel_bias_before_mps2;
+  message.state_accel_bias_after_mps2 =
+      diagnostics.state_accel_bias_after_mps2;
+  message.state_gravity_before_mps2 = diagnostics.state_gravity_before_mps2;
+  message.state_gravity_after_mps2 = diagnostics.state_gravity_after_mps2;
   message.information_eigenvalues = diagnostics.information_eigenvalues;
   message.information_condition_number = diagnostics.information_condition_number;
   message.information_rank = diagnostics.information_rank;

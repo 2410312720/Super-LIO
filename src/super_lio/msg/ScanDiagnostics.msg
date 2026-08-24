@@ -20,8 +20,26 @@ float64 residual_max_m
 uint32 iteration_count
 float64[] iteration_rotation_correction_rad
 float64[] iteration_position_correction_m
+# Flattened iteration_count x 18 error states, ordered R,p,v,bg,ba,g.
+float64[] iteration_state_correction
+float64[3] scan_rotation_correction_vector_rad
+float64[3] scan_position_correction_vector_m
 float64 scan_rotation_correction_rad
 float64 scan_position_correction_m
+
+# Nominal ESKF state immediately before and after the scan observation update.
+float64[4] state_orientation_before_xyzw
+float64[4] state_orientation_after_xyzw
+float64[3] state_position_before_m
+float64[3] state_position_after_m
+float64[3] state_velocity_before_mps
+float64[3] state_velocity_after_mps
+float64[3] state_gyro_bias_before_radps
+float64[3] state_gyro_bias_after_radps
+float64[3] state_accel_bias_before_mps2
+float64[3] state_accel_bias_after_mps2
+float64[3] state_gravity_before_mps2
+float64[3] state_gravity_after_mps2
 
 float64[6] information_eigenvalues
 float64 information_condition_number

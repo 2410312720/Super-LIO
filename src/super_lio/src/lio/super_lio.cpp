@@ -751,7 +751,8 @@ void SuperLIO::Observe(){
 
   ivox_->reset_max_group();
   int iter_num = 0;
-  const SE3 pose_before = kf_->GetSE3();
+  const SysState state_before = kf_->GetSysState();
+  const V3 gravity_before = kf_->GetGravity();
   const ESKF::COV covariance_before = kf_->GetCov();
   std::vector<ObservationIterationSummary> observation_iterations;
   std::vector<ESKF::IterationDiagnostic> filter_iterations;
@@ -913,18 +914,54 @@ void SuperLIO::Observe(){
   }, iteration_diagnostic);
 
   if (g_publish_diagnostics) {
-    const SE3 pose_after = kf_->GetSE3();
+    const SysState state_after = kf_->GetSysState();
     const ESKF::COV covariance_after = kf_->GetCov();
+    const V3 rotation_correction =
+        (state_before.R.inverse() * state_after.R).log_vee();
+    const V3 position_correction = state_after.p - state_before.p;
     scan_diagnostics_.scan_rotation_correction_rad =
-        (SO3(pose_before.R_).inverse() * SO3(pose_after.R_)).log_vee().norm();
+        rotation_correction.norm();
     scan_diagnostics_.scan_position_correction_m =
-        (pose_after.t_ - pose_before.t_).norm();
+        position_correction.norm();
+
+    const auto copy_vector3 = [](const V3& source, std::array<double, 3>& target) {
+      for (int index = 0; index < 3; ++index) {
+        target[index] = source[index];
+      }
+    };
+    const auto copy_quaternion = [](const SO3& source, std::array<double, 4>& target) {
+      const V4 coefficients = source.coeffs();
+      for (int index = 0; index < 4; ++index) {
+        target[index] = coefficients[index];
+      }
+    };
+    copy_vector3(
+        rotation_correction, scan_diagnostics_.scan_rotation_correction_vector_rad);
+    copy_vector3(
+        position_correction, scan_diagnostics_.scan_position_correction_vector_m);
+    copy_quaternion(
+        state_before.R, scan_diagnostics_.state_orientation_before_xyzw);
+    copy_quaternion(
+        state_after.R, scan_diagnostics_.state_orientation_after_xyzw);
+    copy_vector3(state_before.p, scan_diagnostics_.state_position_before_m);
+    copy_vector3(state_after.p, scan_diagnostics_.state_position_after_m);
+    copy_vector3(state_before.v, scan_diagnostics_.state_velocity_before_mps);
+    copy_vector3(state_after.v, scan_diagnostics_.state_velocity_after_mps);
+    copy_vector3(state_before.bg, scan_diagnostics_.state_gyro_bias_before_radps);
+    copy_vector3(state_after.bg, scan_diagnostics_.state_gyro_bias_after_radps);
+    copy_vector3(state_before.ba, scan_diagnostics_.state_accel_bias_before_mps2);
+    copy_vector3(state_after.ba, scan_diagnostics_.state_accel_bias_after_mps2);
+    copy_vector3(gravity_before, scan_diagnostics_.state_gravity_before_mps2);
+    copy_vector3(kf_->GetGravity(), scan_diagnostics_.state_gravity_after_mps2);
 
     for (const auto& iteration : filter_iterations) {
       scan_diagnostics_.iteration_rotation_correction_rad.push_back(
           iteration.dx.template head<3>().norm());
       scan_diagnostics_.iteration_position_correction_m.push_back(
           iteration.dx.template segment<3>(3).norm());
+      for (int index = 0; index < iteration.dx.rows(); ++index) {
+        scan_diagnostics_.iteration_state_correction.push_back(iteration.dx[index]);
+      }
     }
 
     if (!observation_iterations.empty()) {

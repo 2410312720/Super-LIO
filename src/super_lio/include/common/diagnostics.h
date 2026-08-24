@@ -67,8 +67,24 @@ struct ScanDiagnosticsData {
   ResidualStatistics residual;
   std::vector<double> iteration_rotation_correction_rad;
   std::vector<double> iteration_position_correction_m;
+  std::vector<double> iteration_state_correction;
+  std::array<double, 3> scan_rotation_correction_vector_rad{};
+  std::array<double, 3> scan_position_correction_vector_m{};
   double scan_rotation_correction_rad = 0.0;
   double scan_position_correction_m = 0.0;
+
+  std::array<double, 4> state_orientation_before_xyzw{};
+  std::array<double, 4> state_orientation_after_xyzw{};
+  std::array<double, 3> state_position_before_m{};
+  std::array<double, 3> state_position_after_m{};
+  std::array<double, 3> state_velocity_before_mps{};
+  std::array<double, 3> state_velocity_after_mps{};
+  std::array<double, 3> state_gyro_bias_before_radps{};
+  std::array<double, 3> state_gyro_bias_after_radps{};
+  std::array<double, 3> state_accel_bias_before_mps2{};
+  std::array<double, 3> state_accel_bias_after_mps2{};
+  std::array<double, 3> state_gravity_before_mps2{};
+  std::array<double, 3> state_gravity_after_mps2{};
 
   std::array<double, 6> information_eigenvalues{};
   double information_condition_number = 0.0;
