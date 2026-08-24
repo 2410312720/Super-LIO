@@ -136,6 +136,10 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_diagnostics test/test_diagnostics.cpp)
   target_include_directories(test_diagnostics PRIVATE include)
+
+  ament_add_gtest(test_covariance_utils test/test_covariance_utils.cpp)
+  target_include_directories(test_covariance_utils PRIVATE include)
+  target_link_libraries(test_covariance_utils Eigen3::Eigen)
 endif()
 
 ament_package()

@@ -1,4 +1,7 @@
 #include "lio/ESKF.h"
+#include "lio/covariance_utils.h"
+
+#include <glog/logging.h>
 
 using namespace BASIC;
 
@@ -272,7 +275,7 @@ bool ESKF::UpdateObserve(
      */
 
     M18 Pk_inv = Pk.inverse();
-    Pk_inv.block<6,6>(0,0) += HTVH;
+    Pk_inv += embedObservedInformation<scalar, STATE_DIM, 6>(HTVH);
 
     Qk = Pk_inv.inverse();
 
@@ -293,23 +296,34 @@ bool ESKF::UpdateObserve(
     }
   }
 
-  // update P
-  M18 temp_cov = M18::Identity();
-  temp_cov.block<6,6>(0,0) = HTVH;
-  P_ = (M18::Identity() - Qk * temp_cov) * Pk;
+  // Qk is the information-form posterior covariance. HTVH only observes the
+  // first six error-state dimensions (R, p); embedding identity entries in the
+  // remaining dimensions would add fictitious information to v, biases and g.
+  M18 posterior_covariance;
+  CovarianceValidation<M18> posterior_validation;
+  if (!stabilizeCovariance(Qk, posterior_covariance, &posterior_validation)) {
+    LOG(ERROR) << "Invalid observation posterior covariance, retaining prior. "
+               << "finite=" << posterior_validation.finite
+               << ", min_eigenvalue=" << posterior_validation.minimum_eigenvalue;
+    if (!stabilizeCovariance(Pk, posterior_covariance)) {
+      LOG(ERROR) << "Prior covariance is also invalid; using conservative identity covariance.";
+      posterior_covariance = M18::Identity();
+    }
+  }
 
-  Pk = P_;
-
-  // project P
+  // Reset the rotation error after injecting the final nominal-state update.
   M3 J_theta = M3::Identity() - 0.5 * SO3::hat(dx_.template block<3, 1>(0, 0));
-  for(int j = 0; j < STATE_DIM; j+=3){
-    Pk.block<3,3>(0, j).noalias() = J_theta * P_.block<3,3>(0, j);
+  M18 reset_jacobian = M18::Identity();
+  reset_jacobian.block<3, 3>(0, 0) = J_theta;
+  const M18 projected_covariance =
+      reset_jacobian * posterior_covariance * reset_jacobian.transpose();
+  CovarianceValidation<M18> projected_validation;
+  if (!stabilizeCovariance(projected_covariance, P_, &projected_validation)) {
+    LOG(ERROR) << "Invalid reset-projected covariance, retaining unprojected posterior. "
+               << "finite=" << projected_validation.finite
+               << ", min_eigenvalue=" << projected_validation.minimum_eigenvalue;
+    P_ = posterior_covariance;
   }
-  for(int j = 0; j < STATE_DIM; j+=3){
-    Pk.block<3,3>(j, 0) = Pk.block<3,3>(j, 0) * J_theta.transpose();
-  }
-
-  P_ = Pk;
 
   dx_.setZero();
   
