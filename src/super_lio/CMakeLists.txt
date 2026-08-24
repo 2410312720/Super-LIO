@@ -34,6 +34,7 @@ find_package(basic REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   msg/CloudPose.msg
   msg/CloudPose2.msg
+  msg/ScanDiagnostics.msg
   DEPENDENCIES std_msgs sensor_msgs geometry_msgs
 )
 
@@ -132,6 +133,9 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_initial_pose test/test_initial_pose.cpp)
   target_link_libraries(test_initial_pose lio)
+
+  ament_add_gtest(test_diagnostics test/test_diagnostics.cpp)
+  target_include_directories(test_diagnostics PRIVATE include)
 endif()
 
 ament_package()

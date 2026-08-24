@@ -1,0 +1,47 @@
+std_msgs/Header header
+
+uint64 scan_sequence
+float64 scan_start_time
+float64 scan_end_time
+
+uint32 input_point_count
+uint32 filtered_point_count
+uint32 downsampled_point_count
+uint32 knn_candidate_count
+uint32 matched_point_count
+float64 match_fraction
+
+float64 residual_mean_m
+float64 residual_abs_mean_m
+float64 residual_rmse_m
+float64 residual_p95_m
+float64 residual_max_m
+
+uint32 iteration_count
+float64[] iteration_rotation_correction_rad
+float64[] iteration_position_correction_m
+float64 scan_rotation_correction_rad
+float64 scan_position_correction_m
+
+float64[6] information_eigenvalues
+float64 information_condition_number
+uint32 information_rank
+float64[6] information_weakest_direction
+
+float64[18] covariance_before_diagonal
+float64[18] covariance_after_diagonal
+float64 covariance_before_min_eigenvalue
+float64 covariance_after_min_eigenvalue
+float64 covariance_before_symmetry_error
+float64 covariance_after_symmetry_error
+
+float64 imu_state_end_lag_ms
+uint32 points_after_last_imu
+float64 points_after_last_imu_fraction
+
+float64 undistort_time_ms
+float64 downsample_time_ms
+float64 observe_time_ms
+float64 map_update_time_ms
+float64 output_time_ms
+float64 total_time_ms

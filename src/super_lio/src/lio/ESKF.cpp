@@ -229,7 +229,8 @@ bool ESKF::Predict(const IMUData& imu) {
 
 
 const int STATE_DIM = 18;
-bool ESKF::UpdateObserve(ESKF::ObsFunc obs) {
+bool ESKF::UpdateObserve(
+    ESKF::ObsFunc obs, ESKF::IterationDiagnosticFunc diagnostic) {
   SO3 R_0 = R_;
 
   M6 HTVH;     // H^T * V^(-1) * H
@@ -279,6 +280,10 @@ bool ESKF::UpdateObserve(ESKF::ObsFunc obs) {
     error_dx.head(6) = HTVr;
 
     dx_ = Qk * error_dx;
+
+    if (diagnostic) {
+      diagnostic(IterationDiagnostic{iter, need_converge_, dx_, HTVH});
+    }
 
     // update norm state
     Update();

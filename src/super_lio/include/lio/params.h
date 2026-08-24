@@ -32,6 +32,7 @@ namespace LI2Sup{
 
   /// evaluation
   extern bool g_time_eva;
+  extern bool g_publish_diagnostics;
 
   extern bool g_save_map;
   extern bool g_if_filter;

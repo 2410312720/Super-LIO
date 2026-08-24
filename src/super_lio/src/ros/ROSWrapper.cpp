@@ -55,6 +55,9 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<bool>("lio.eva.timer", false);
   node.get_parameter("lio.eva.timer", g_time_eva);
 
+  node.declare_parameter<bool>("lio.eva.publish_diagnostics", false);
+  node.get_parameter("lio.eva.publish_diagnostics", g_publish_diagnostics);
+
   node.declare_parameter<bool>("lio.map.if_filter", false);
   node.get_parameter("lio.map.if_filter", g_if_filter);
 
@@ -501,8 +504,73 @@ void ROSWrapper::setupIO(){
           "/lio/dynamic_ratio", 5);
   }
 
+  if (g_publish_diagnostics) {
+    pub_scan_diagnostics_ =
+        this->create_publisher<super_lio::msg::ScanDiagnostics>(
+            "/lio/diagnostics/scan", rclcpp::QoS(50).reliable());
+  }
+
   tf_broadcaster_ =
       std::make_shared<tf2_ros::TransformBroadcaster>(this);
+}
+
+
+void ROSWrapper::pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics)
+{
+  if (!pub_scan_diagnostics_) {
+    return;
+  }
+
+  super_lio::msg::ScanDiagnostics message;
+  message.header.stamp = toRosTime(diagnostics.scan_end_time);
+  message.header.frame_id = "world";
+  message.scan_sequence = diagnostics.scan_sequence;
+  message.scan_start_time = diagnostics.scan_start_time;
+  message.scan_end_time = diagnostics.scan_end_time;
+  message.input_point_count = static_cast<std::uint32_t>(diagnostics.input_point_count);
+  message.filtered_point_count = static_cast<std::uint32_t>(diagnostics.filtered_point_count);
+  message.downsampled_point_count = static_cast<std::uint32_t>(diagnostics.downsampled_point_count);
+  message.knn_candidate_count = static_cast<std::uint32_t>(diagnostics.knn_candidate_count);
+  message.matched_point_count = static_cast<std::uint32_t>(diagnostics.matched_point_count);
+  message.match_fraction = diagnostics.match_fraction;
+  message.residual_mean_m = diagnostics.residual.mean;
+  message.residual_abs_mean_m = diagnostics.residual.absolute_mean;
+  message.residual_rmse_m = diagnostics.residual.rmse;
+  message.residual_p95_m = diagnostics.residual.p95;
+  message.residual_max_m = diagnostics.residual.maximum;
+  message.iteration_count = static_cast<std::uint32_t>(
+      diagnostics.iteration_rotation_correction_rad.size());
+  message.iteration_rotation_correction_rad =
+      diagnostics.iteration_rotation_correction_rad;
+  message.iteration_position_correction_m =
+      diagnostics.iteration_position_correction_m;
+  message.scan_rotation_correction_rad = diagnostics.scan_rotation_correction_rad;
+  message.scan_position_correction_m = diagnostics.scan_position_correction_m;
+  message.information_eigenvalues = diagnostics.information_eigenvalues;
+  message.information_condition_number = diagnostics.information_condition_number;
+  message.information_rank = diagnostics.information_rank;
+  message.information_weakest_direction = diagnostics.information_weakest_direction;
+  message.covariance_before_diagonal = diagnostics.covariance_before_diagonal;
+  message.covariance_after_diagonal = diagnostics.covariance_after_diagonal;
+  message.covariance_before_min_eigenvalue =
+      diagnostics.covariance_before_min_eigenvalue;
+  message.covariance_after_min_eigenvalue =
+      diagnostics.covariance_after_min_eigenvalue;
+  message.covariance_before_symmetry_error =
+      diagnostics.covariance_before_symmetry_error;
+  message.covariance_after_symmetry_error =
+      diagnostics.covariance_after_symmetry_error;
+  message.imu_state_end_lag_ms = diagnostics.imu_state_end_lag_ms;
+  message.points_after_last_imu =
+      static_cast<std::uint32_t>(diagnostics.points_after_last_imu);
+  message.points_after_last_imu_fraction = diagnostics.points_after_last_imu_fraction;
+  message.undistort_time_ms = diagnostics.undistort_time_ms;
+  message.downsample_time_ms = diagnostics.downsample_time_ms;
+  message.observe_time_ms = diagnostics.observe_time_ms;
+  message.map_update_time_ms = diagnostics.map_update_time_ms;
+  message.output_time_ms = diagnostics.output_time_ms;
+  message.total_time_ms = diagnostics.total_time_ms;
+  pub_scan_diagnostics_->publish(message);
 }
 
 
@@ -593,6 +661,7 @@ void ROSWrapper::livoxHandler(const livox_ros_driver2::msg::CustomMsg::SharedPtr
   if(msg->point_num < 10) return;
   LidarData lidar_data;
   std::size_t ptsize = msg->point_num;
+  lidar_data.input_point_count = ptsize;
   lidar_data.pc.reset(new pcl::PointCloud<LI2Sup::PointXTZIT>());
   lidar_data.pc->reserve(ptsize / g_filter_rate + 1);
 
@@ -619,6 +688,8 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
   if(msg->data.size() < 10) return;
   
   LidarData lidar_data;
+  lidar_data.input_point_count =
+      static_cast<std::size_t>(msg->width) * static_cast<std::size_t>(msg->height);
   lidar_data.pc.reset(new pcl::PointCloud<LI2Sup::PointXTZIT>());
 
   double offset_time = 0.0;

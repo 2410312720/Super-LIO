@@ -16,6 +16,7 @@
 
 #include "basic/alias.h"
 #include "common/ds.h"
+#include "common/diagnostics.h"
 #include "common/timer.h"
 #include "params.h"
 #include "ESKF.h"
@@ -100,6 +101,8 @@ protected:
   int pcd_index_ = -1;
 
   Timer time_record_;
+  ScanDiagnosticsData scan_diagnostics_;
+  std::uint64_t diagnostic_scan_sequence_ = 0;
 };
 
 } // namespace END.

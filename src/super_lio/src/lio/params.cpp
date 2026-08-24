@@ -13,6 +13,7 @@ namespace LI2Sup{
 
   /// evaluation
   bool g_time_eva = false;
+  bool g_publish_diagnostics = false;
 
   bool   g_save_map;
   bool   g_if_filter; 
@@ -78,5 +79,4 @@ namespace LI2Sup{
   double g_init_px, g_init_py, g_init_pz, g_init_roll, g_init_pitch, g_init_yaw;
 
   DynamicFilterOptions g_dynamic_filter_options;
-
 }

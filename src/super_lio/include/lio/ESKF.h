@@ -38,6 +38,13 @@ public:
     BASIC::SE3  pose;
   };
 
+  struct IterationDiagnostic {
+    int iteration = 0;
+    bool need_converge = false;
+    STATE dx = STATE::Zero();
+    BASIC::M6 information = BASIC::M6::Zero();
+  };
+
 
   ESKF(Options option = Options()) : options_(option) { BuildNoise(option); }
 
@@ -55,7 +62,8 @@ public:
   bool Predict(const IMUData& imu);
 
   using ObsFunc = std::function<void(const KFState& kf_state, BASIC::M6& HT_Vinv_H, BASIC::V6& HT_Vinv_r)>;
-  bool UpdateObserve(ObsFunc obs);
+  using IterationDiagnosticFunc = std::function<void(const IterationDiagnostic&)>;
+  bool UpdateObserve(ObsFunc obs, IterationDiagnosticFunc diagnostic = {});
 
   double GetTime() const { return current_time_; }
 

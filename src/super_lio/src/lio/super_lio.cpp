@@ -2,15 +2,18 @@
 #include "lio/super_lio.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <unordered_map>
 #include <sys/resource.h>
+#include <utility>
 #include <tbb/parallel_for.h>
 #include <tbb/blocked_range.h>
 #include <tbb/concurrent_vector.h>
 #include <tbb/enumerable_thread_specific.h>
+#include <Eigen/Eigenvalues>
 
 
 using namespace BASIC;
@@ -387,6 +390,41 @@ bool SuperLIO::map_init(){
 
 void SuperLIO::stateProcess(){
   ++processing_frame_id_;
+  if (g_publish_diagnostics) {
+    scan_diagnostics_ = ScanDiagnosticsData{};
+    scan_diagnostics_.scan_sequence = diagnostic_scan_sequence_++;
+    scan_diagnostics_.scan_start_time = measures_.lidar.start_time;
+    scan_diagnostics_.scan_end_time = measures_.lidar.end_time;
+    scan_diagnostics_.input_point_count = measures_.lidar.input_point_count;
+
+    const auto total_start = std::chrono::steady_clock::now();
+    const auto run_stage = [this](auto&& function, const std::string& name, double& elapsed_ms) {
+      const auto start = std::chrono::steady_clock::now();
+      if (g_time_eva) {
+        time_record_.Evaluate(std::forward<decltype(function)>(function), name);
+      } else {
+        std::forward<decltype(function)>(function)();
+      }
+      elapsed_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start).count();
+    };
+
+    run_stage([this]() { Propagation_Undistort(); }, "[Undistort]",
+              scan_diagnostics_.undistort_time_ms);
+    run_stage([this]() { DownSample(); }, "[DownSample]",
+              scan_diagnostics_.downsample_time_ms);
+    run_stage([this]() { Observe(); }, "[Observe]",
+              scan_diagnostics_.observe_time_ms);
+    run_stage([this]() { UpdateMap(); }, "[UpdateMap]",
+              scan_diagnostics_.map_update_time_ms);
+    run_stage([this]() { Output(); }, "[Output]",
+              scan_diagnostics_.output_time_ms);
+    scan_diagnostics_.total_time_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - total_start).count();
+    data_wrapper_->pub_scan_diagnostics(scan_diagnostics_);
+    caceData();
+    return;
+  }
   if(g_time_eva){
     time_record_.Evaluate([this](){Propagation_Undistort();}, "[Undistort]");
     time_record_.Evaluate([this]() { DownSample(); }, "[DownSample]");
@@ -596,6 +634,21 @@ void SuperLIO::Propagation_Undistort(){
   const double start_time = measures_.lidar.start_time;
   auto& raw_pc = measures_.lidar.pc;
 
+  if (g_publish_diagnostics) {
+    scan_diagnostics_.filtered_point_count = raw_pc->size();
+    const double last_state_time = propagate_states_.back().time;
+    scan_diagnostics_.imu_state_end_lag_ms =
+        std::max(0.0, measures_.lidar.end_time - last_state_time) * 1000.0;
+    scan_diagnostics_.points_after_last_imu = static_cast<std::size_t>(
+        std::count_if(raw_pc->points.begin(), raw_pc->points.end(),
+                      [start_time, last_state_time](const auto& point) {
+                        return start_time + point.offset_time > last_state_time;
+                      }));
+    scan_diagnostics_.points_after_last_imu_fraction = raw_pc->empty() ? 0.0 :
+        static_cast<double>(scan_diagnostics_.points_after_last_imu) /
+        static_cast<double>(raw_pc->size());
+  }
+
   std::size_t ptsize = raw_pc->points.size();
   scan_undistort_full_->resize(ptsize); 
 
@@ -648,6 +701,9 @@ void SuperLIO::Propagation_Undistort(){
 void SuperLIO::DownSample(){
   voxel_grid_fliter_.setInputCloud(scan_undistort_full_);
   voxel_grid_fliter_.filter(ds_undistort_);
+  if (g_publish_diagnostics) {
+    scan_diagnostics_.downsampled_point_count = ds_undistort_->size();
+  }
 }
 
 
@@ -657,6 +713,14 @@ struct ThreadACC{
   M6d fallback_HTVH = M6d::Zero();
   V6d fallback_HTVr = V6d::Zero();
   std::size_t dynamic_effective_points = 0;
+  std::vector<double> residuals;
+};
+
+
+struct ObservationIterationSummary {
+  std::size_t candidate_count = 0;
+  M6d information = M6d::Zero();
+  ResidualStatistics residual;
 };
 
 
@@ -686,6 +750,17 @@ void SuperLIO::Observe(){
   }
 
   ivox_->reset_max_group();
+  int iter_num = 0;
+  const SE3 pose_before = kf_->GetSE3();
+  const ESKF::COV covariance_before = kf_->GetCov();
+  std::vector<ObservationIterationSummary> observation_iterations;
+  std::vector<ESKF::IterationDiagnostic> filter_iterations;
+  ESKF::IterationDiagnosticFunc iteration_diagnostic;
+  if (g_publish_diagnostics) {
+    iteration_diagnostic = [&](const ESKF::IterationDiagnostic& diagnostic) {
+      filter_iterations.push_back(diagnostic);
+    };
+  }
 
   kf_->UpdateObserve([&, this](const ESKF::KFState &kf_state, M6 &HTVH, V6 &HTVr) {
     const SE3 pose = kf_state.pose;
@@ -745,7 +820,11 @@ void SuperLIO::Observe(){
             V6d J;
             J.head<3>() = point_body_d.cross(nb);
             J.tail<3>() = normvec;
-      
+
+            if (g_publish_diagnostics) {
+              local_acc.residuals.push_back(static_cast<double>(error));
+            }
+
             if (!g_dynamic_filter_options.enable ||
                 !g_dynamic_filter_options.filter_pose_update) {
               local_acc.dynamic_HTVH += J * 1000.0 * J.transpose();
@@ -806,6 +885,17 @@ void SuperLIO::Observe(){
       HTVr = dynamic_HTVr.cast<scalar>();
     }
 
+    if (g_publish_diagnostics) {
+      std::vector<double> residuals;
+      for (const auto& local_acc : tls_acc) {
+        residuals.insert(
+            residuals.end(), local_acc.residuals.begin(), local_acc.residuals.end());
+      }
+      observation_iterations.push_back(ObservationIterationSummary{
+          effect_knn_num_, HTVH.template cast<double>(),
+          summarizeResiduals(residuals)});
+    }
+
     if(need_converge) return;
 
     int _effect_knn_num = 0;
@@ -819,7 +909,79 @@ void SuperLIO::Observe(){
     // LOG(INFO) << "effect_knn_num_: " << effect_knn_num_ << ", _effect_knn_num: " << _effect_knn_num;
     effect_knn_num_ = _effect_knn_num;
 
-  });
+    iter_num++;
+  }, iteration_diagnostic);
+
+  if (g_publish_diagnostics) {
+    const SE3 pose_after = kf_->GetSE3();
+    const ESKF::COV covariance_after = kf_->GetCov();
+    scan_diagnostics_.scan_rotation_correction_rad =
+        (SO3(pose_before.R_).inverse() * SO3(pose_after.R_)).log_vee().norm();
+    scan_diagnostics_.scan_position_correction_m =
+        (pose_after.t_ - pose_before.t_).norm();
+
+    for (const auto& iteration : filter_iterations) {
+      scan_diagnostics_.iteration_rotation_correction_rad.push_back(
+          iteration.dx.template head<3>().norm());
+      scan_diagnostics_.iteration_position_correction_m.push_back(
+          iteration.dx.template segment<3>(3).norm());
+    }
+
+    if (!observation_iterations.empty()) {
+      const auto& final_observation = observation_iterations.back();
+      scan_diagnostics_.knn_candidate_count = final_observation.candidate_count;
+      scan_diagnostics_.matched_point_count = final_observation.residual.count;
+      scan_diagnostics_.match_fraction = final_observation.candidate_count == 0 ? 0.0 :
+          static_cast<double>(final_observation.residual.count) /
+          static_cast<double>(final_observation.candidate_count);
+      scan_diagnostics_.residual = final_observation.residual;
+
+      Eigen::SelfAdjointEigenSolver<M6d> information_solver(
+          0.5 * (final_observation.information +
+                 final_observation.information.transpose()));
+      if (information_solver.info() == Eigen::Success) {
+        const auto eigenvalues = information_solver.eigenvalues();
+        const auto eigenvectors = information_solver.eigenvectors();
+        const double largest = std::max(0.0, eigenvalues[5]);
+        const double rank_threshold = largest * 1e-9;
+        for (int index = 0; index < 6; ++index) {
+          scan_diagnostics_.information_eigenvalues[index] = eigenvalues[index];
+          scan_diagnostics_.information_weakest_direction[index] = eigenvectors(index, 0);
+          if (eigenvalues[index] > rank_threshold) {
+            ++scan_diagnostics_.information_rank;
+          }
+        }
+        const double condition_floor = largest * 1e-15;
+        const double smallest = std::max(eigenvalues[0], condition_floor);
+        scan_diagnostics_.information_condition_number =
+            smallest > 0.0 ? largest / smallest : 0.0;
+      }
+    }
+
+    const auto fill_covariance = [](const ESKF::COV& covariance,
+                                    std::array<double, 18>& diagonal,
+                                    double& minimum_eigenvalue,
+                                    double& symmetry_error) {
+      const M18d covariance_double = covariance.template cast<double>();
+      for (int index = 0; index < 18; ++index) {
+        diagonal[index] = covariance_double(index, index);
+      }
+      symmetry_error =
+          (covariance_double - covariance_double.transpose()).cwiseAbs().maxCoeff();
+      Eigen::SelfAdjointEigenSolver<M18d> solver(
+          0.5 * (covariance_double + covariance_double.transpose()));
+      minimum_eigenvalue = solver.info() == Eigen::Success ?
+          solver.eigenvalues().minCoeff() : 0.0;
+    };
+    fill_covariance(
+        covariance_before, scan_diagnostics_.covariance_before_diagonal,
+        scan_diagnostics_.covariance_before_min_eigenvalue,
+        scan_diagnostics_.covariance_before_symmetry_error);
+    fill_covariance(
+        covariance_after, scan_diagnostics_.covariance_after_diagonal,
+        scan_diagnostics_.covariance_after_min_eigenvalue,
+        scan_diagnostics_.covariance_after_symmetry_error);
+  }
 
   const SE3 final_pose = kf_->GetSE3();
   static_point_count_ = 0;

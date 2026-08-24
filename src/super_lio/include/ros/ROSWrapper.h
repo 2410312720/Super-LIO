@@ -31,6 +31,7 @@
 /// msgs
 #include "super_lio/msg/cloud_pose.hpp"
 #include "super_lio/msg/cloud_pose2.hpp"
+#include "super_lio/msg/scan_diagnostics.hpp"
 
 
 #include "lio/params.h"
@@ -38,6 +39,7 @@
 #include "basic/logs.h"
 #include "basic/Manifold.h"
 #include "common/ds.h"
+#include "common/diagnostics.h"
 
 #include "lio/ESKF.h"
 #include "OctVoxMap/OctVoxMap.hpp"
@@ -82,6 +84,7 @@ public:
   void pub_cloud_body_pose( const BASIC::VV3& pc_body,
                             const NavState& state);  
   void pub_processing_time(double time, double current_time, double mean_time, double std_time);
+  void pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics);
 
   void set_global_map(const BASIC::CloudPtr& global_map);
 
@@ -132,6 +135,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_dynamic_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_unknown_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr pub_dynamic_ratio_;
+  rclcpp::Publisher<super_lio::msg::ScanDiagnostics>::SharedPtr pub_scan_diagnostics_;
 };
 
 } // namespace END.

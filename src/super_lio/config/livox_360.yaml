@@ -47,6 +47,7 @@
     lio.output.pub_step: 1
 
     lio.eva.timer: true
+    lio.eva.publish_diagnostics: true
 
     # Dynamic filtering is opt-in. Set enable to true to activate it.
     lio.dynamic.enable: true
