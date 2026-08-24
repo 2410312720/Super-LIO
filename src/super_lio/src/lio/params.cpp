@@ -53,6 +53,9 @@ namespace LI2Sup{
   bool g_kf_align_gravity = true;
   double g_kf_quit_eps;
 
+  /// point-to-plane observation
+  double g_point_to_plane_information = 1000.0;
+
   /// submap 
   double g_submap_resolution;
   int    g_submap_capacity;

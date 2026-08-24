@@ -37,6 +37,8 @@
     lio.kf.kf_align_gravity: true
     lio.kf.kf_quit_eps: 0.001
 
+    lio.observation.point_to_plane_information: 1000.0
+
     lio.output.robot: true
     lio.output.plan_env_world: false
     lio.output.plan_env_body: false

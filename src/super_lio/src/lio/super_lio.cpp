@@ -828,15 +828,16 @@ void SuperLIO::Observe(){
             V6d J;
             J.head<3>() = point_body_d.cross(nb);
             J.tail<3>() = normvec;
-
             if (g_publish_diagnostics) {
               local_acc.residuals.push_back(static_cast<double>(error));
             }
 
             if (!g_dynamic_filter_options.enable ||
                 !g_dynamic_filter_options.filter_pose_update) {
-              local_acc.dynamic_HTVH += J * 1000.0 * J.transpose();
-              local_acc.dynamic_HTVr -= J * 1000.0 * error;
+              local_acc.dynamic_HTVH +=
+                  J * g_point_to_plane_information * J.transpose();
+              local_acc.dynamic_HTVr -=
+                  J * g_point_to_plane_information * error;
               continue;
             }
 

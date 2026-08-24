@@ -182,6 +182,17 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<double>("lio.kf.kf_quit_eps", 0.0);
   node.get_parameter("lio.kf.kf_quit_eps", g_kf_quit_eps);
 
+  node.declare_parameter<double>(
+      "lio.observation.point_to_plane_information", 1000.0);
+  node.get_parameter(
+      "lio.observation.point_to_plane_information",
+      g_point_to_plane_information);
+  if (!std::isfinite(g_point_to_plane_information) ||
+      g_point_to_plane_information <= 0.0) {
+    throw std::invalid_argument(
+        "lio.observation.point_to_plane_information must be finite and positive");
+  }
+
   // submaps
   node.declare_parameter<double>("lio.submap.submap_resolution", 0.0);
   node.get_parameter("lio.submap.submap_resolution", g_submap_resolution);

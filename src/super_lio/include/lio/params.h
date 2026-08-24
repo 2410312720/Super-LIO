@@ -72,6 +72,9 @@ namespace LI2Sup{
   extern bool g_kf_align_gravity;
   extern double g_kf_quit_eps;
 
+  /// point-to-plane observation
+  extern double g_point_to_plane_information;
+
   /// submaps
   extern double g_submap_resolution;
   extern int    g_submap_capacity;
