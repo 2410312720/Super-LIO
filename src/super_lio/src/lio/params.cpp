@@ -55,6 +55,8 @@ namespace LI2Sup{
 
   /// point-to-plane observation
   double g_point_to_plane_information = 1000.0;
+  RobustKernel g_observation_robust_kernel = RobustKernel::None;
+  double g_observation_robust_scale_m = 0.03;
 
   /// submap 
   double g_submap_resolution;

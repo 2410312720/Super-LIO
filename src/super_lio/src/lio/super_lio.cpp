@@ -828,23 +828,32 @@ void SuperLIO::Observe(){
             V6d J;
             J.head<3>() = point_body_d.cross(nb);
             J.tail<3>() = normvec;
+            double observation_robust_weight = 1.0;
+            if (g_observation_robust_kernel != RobustKernel::None) {
+              observation_robust_weight = robustObservationWeight(
+                  g_observation_robust_kernel, error,
+                  g_observation_robust_scale_m);
+            }
             if (g_publish_diagnostics) {
               local_acc.residuals.push_back(static_cast<double>(error));
             }
 
             if (!g_dynamic_filter_options.enable ||
                 !g_dynamic_filter_options.filter_pose_update) {
+              const double observation_information =
+                  g_point_to_plane_information * observation_robust_weight;
               local_acc.dynamic_HTVH +=
-                  J * g_point_to_plane_information * J.transpose();
+                  J * observation_information * J.transpose();
               local_acc.dynamic_HTVr -=
-                  J * g_point_to_plane_information * error;
+                  J * observation_information * error;
               continue;
             }
 
             const double robust_weight =
               dynamic_filter_.cauchyWeight(point_residuals_[idx]);
             const double fallback_omega =
-              g_dynamic_filter_options.observation_inv_variance * robust_weight;
+              g_dynamic_filter_options.observation_inv_variance *
+              observation_robust_weight * robust_weight;
             if (std::isfinite(fallback_omega) &&
                 fallback_omega > std::numeric_limits<double>::epsilon()) {
               local_acc.fallback_HTVH +=

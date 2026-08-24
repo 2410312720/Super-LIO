@@ -193,6 +193,22 @@ void LoadParamFromRos(rclcpp::Node& node)
         "lio.observation.point_to_plane_information must be finite and positive");
   }
 
+  std::string robust_kernel;
+  node.declare_parameter<std::string>(
+      "lio.observation.robust_kernel", "none");
+  node.get_parameter("lio.observation.robust_kernel", robust_kernel);
+  g_observation_robust_kernel = robustKernelFromString(robust_kernel);
+
+  node.declare_parameter<double>(
+      "lio.observation.robust_scale_m", 0.03);
+  node.get_parameter(
+      "lio.observation.robust_scale_m", g_observation_robust_scale_m);
+  if (!std::isfinite(g_observation_robust_scale_m) ||
+      g_observation_robust_scale_m <= 0.0) {
+    throw std::invalid_argument(
+        "lio.observation.robust_scale_m must be finite and positive");
+  }
+
   // submaps
   node.declare_parameter<double>("lio.submap.submap_resolution", 0.0);
   node.get_parameter("lio.submap.submap_resolution", g_submap_resolution);

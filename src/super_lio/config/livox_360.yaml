@@ -38,6 +38,8 @@
     lio.kf.kf_quit_eps: 0.001
 
     lio.observation.point_to_plane_information: 1000.0
+    lio.observation.robust_kernel: "none"
+    lio.observation.robust_scale_m: 0.03
 
     lio.output.robot: true
     lio.output.plan_env_world: false

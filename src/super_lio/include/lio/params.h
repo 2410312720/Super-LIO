@@ -22,6 +22,7 @@
 #include "basic/Manifold.h"
 #include "lio/dynamic_filter.h"
 #include "lio/initial_pose.h"
+#include "lio/observation_utils.h"
 
 
 namespace LI2Sup{
@@ -74,6 +75,8 @@ namespace LI2Sup{
 
   /// point-to-plane observation
   extern double g_point_to_plane_information;
+  extern RobustKernel g_observation_robust_kernel;
+  extern double g_observation_robust_scale_m;
 
   /// submaps
   extern double g_submap_resolution;
