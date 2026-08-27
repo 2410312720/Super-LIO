@@ -57,7 +57,7 @@
     lio.eva.publish_diagnostics: true
 
     # Dynamic filtering is opt-in. Set enable to true to activate it.
-    lio.dynamic.enable: true
+    lio.dynamic.enable: false
     lio.dynamic.filter_pose_update: true
     lio.dynamic.filter_map_update: true
     lio.dynamic.filter_saved_map: true
