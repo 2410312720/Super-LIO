@@ -14,6 +14,7 @@ namespace LI2Sup{
   /// evaluation
   bool g_time_eva = false;
   bool g_publish_diagnostics = false;
+  int g_diagnostics_publish_every_n_frames = 1;
 
   bool   g_save_map;
   bool   g_if_filter; 

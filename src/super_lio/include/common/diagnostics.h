@@ -64,6 +64,24 @@ struct ScanDiagnosticsData {
   std::size_t matched_point_count = 0;
   double match_fraction = 0.0;
 
+  bool dynamic_filter_enabled = false;
+  bool dynamic_pose_filter_enabled = false;
+  bool dynamic_map_filter_enabled = false;
+  std::size_t dynamic_static_point_count = 0;
+  std::size_t dynamic_unknown_point_count = 0;
+  std::size_t dynamic_candidate_point_count = 0;
+  std::size_t dynamic_confirmed_point_count = 0;
+  double dynamic_ratio = 0.0;
+  std::size_t dynamic_effective_point_count = 0;
+  double dynamic_information_ratio = 0.0;
+  std::uint32_t dynamic_baseline_information_rank = 0;
+  std::uint32_t dynamic_weighted_information_rank = 0;
+  bool dynamic_fallback_required = false;
+  bool dynamic_fallback_used = false;
+  bool dynamic_map_update_skipped = false;
+  std::size_t dynamic_promoted_point_count = 0;
+  std::size_t dynamic_temporal_voxel_count = 0;
+
   ResidualStatistics residual;
   std::vector<double> iteration_rotation_correction_rad;
   std::vector<double> iteration_position_correction_m;

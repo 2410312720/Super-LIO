@@ -4,6 +4,9 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <vector>
+
+#include <Eigen/Eigenvalues>
 
 namespace LI2Sup {
 
@@ -42,13 +45,22 @@ bool sanitizeWeight(double& value, const double fallback) {
   return valid;
 }
 
+bool sanitizeUnitInterval(double& value, const double fallback) {
+  const bool valid = std::isfinite(value) && value >= 0.0 && value <= 1.0;
+  if (!std::isfinite(value)) value = fallback;
+  value = std::clamp(value, 0.0, 1.0);
+  return valid;
+}
+
 }  // namespace
 
 bool DynamicFilterOptions::sanitize() {
   bool valid = true;
+  valid &= sanitizeAtLeastOne(debug_publish_every_n_frames);
   valid &= sanitizePositive(temporal_voxel_size, 0.25);
   valid &= sanitizeAtLeastOne(static_confirm_frames);
   valid &= sanitizeAtLeastOne(max_unseen_frames);
+  valid &= sanitizeAtLeastOne(max_voxels);
   valid &= sanitizeNonNegative(max_static_variance, 0.01);
 
   valid &= sanitizeNonNegative(residual_base, 0.10);
@@ -59,19 +71,83 @@ bool DynamicFilterOptions::sanitize() {
     valid = false;
   }
 
-  valid &= sanitizePositive(robust_scale, 0.15);
-  valid &= sanitizePositive(observation_inv_variance, 1000.0);
-
   valid &= sanitizeWeight(static_weight, 1.0);
   valid &= sanitizeWeight(unknown_weight, 0.25);
   valid &= sanitizeWeight(candidate_weight, 0.05);
   valid &= sanitizeWeight(dynamic_weight, 0.0);
 
   valid &= sanitizeNonNegative(min_effective_points);
+  valid &= sanitizeUnitInterval(min_information_ratio, 0.35);
   valid &= sanitizeAtLeastOne(init_collect_frames);
+  valid &= sanitizeAtLeastOne(init_max_collect_frames);
+  if (init_max_collect_frames < init_collect_frames) {
+    init_max_collect_frames = init_collect_frames;
+    valid = false;
+  }
   valid &= sanitizeAtLeastOne(init_static_min_hits);
+  if (init_static_min_hits > init_max_collect_frames) {
+    init_static_min_hits = init_max_collect_frames;
+    valid = false;
+  }
   valid &= sanitizeNonNegative(init_min_static_points);
   return valid;
+}
+
+DynamicObservationQuality evaluateDynamicObservationQuality(
+    const BASIC::M6d& dynamic_information,
+    const BASIC::M6d& baseline_information,
+    const std::size_t effective_point_count,
+    const DynamicFilterOptions& options) {
+  DynamicObservationQuality quality;
+  quality.effective_point_count = effective_point_count;
+
+  if (!dynamic_information.allFinite() || !baseline_information.allFinite()) {
+    return quality;
+  }
+
+  const BASIC::M6d baseline_symmetric =
+      0.5 * (baseline_information + baseline_information.transpose());
+  const BASIC::M6d dynamic_symmetric =
+      0.5 * (dynamic_information + dynamic_information.transpose());
+  Eigen::SelfAdjointEigenSolver<BASIC::M6d> baseline_solver(
+      baseline_symmetric, Eigen::EigenvaluesOnly);
+  Eigen::SelfAdjointEigenSolver<BASIC::M6d> dynamic_solver(
+      dynamic_symmetric, Eigen::EigenvaluesOnly);
+  if (baseline_solver.info() != Eigen::Success ||
+      dynamic_solver.info() != Eigen::Success) {
+    return quality;
+  }
+
+  const auto baseline_eigenvalues = baseline_solver.eigenvalues();
+  const auto dynamic_eigenvalues = dynamic_solver.eigenvalues();
+  const double baseline_largest = std::max(0.0, baseline_eigenvalues.maxCoeff());
+  if (!std::isfinite(baseline_largest) ||
+      baseline_largest <= std::numeric_limits<double>::epsilon()) {
+    return quality;
+  }
+
+  const double rank_threshold = baseline_largest * 1e-9;
+  double baseline_information_sum = 0.0;
+  double dynamic_information_sum = 0.0;
+  for (int index = 0; index < baseline_eigenvalues.rows(); ++index) {
+    const double baseline_eigenvalue = std::max(0.0, baseline_eigenvalues[index]);
+    const double dynamic_eigenvalue = std::max(0.0, dynamic_eigenvalues[index]);
+    baseline_information_sum += baseline_eigenvalue;
+    dynamic_information_sum += dynamic_eigenvalue;
+    if (baseline_eigenvalue > rank_threshold) ++quality.baseline_rank;
+    if (dynamic_eigenvalue > rank_threshold) ++quality.dynamic_rank;
+  }
+
+  if (baseline_information_sum > std::numeric_limits<double>::epsilon()) {
+    quality.information_ratio = std::clamp(
+        dynamic_information_sum / baseline_information_sum, 0.0, 1.0);
+  }
+  quality.fallback_required =
+      effective_point_count < static_cast<std::size_t>(
+          options.min_effective_points) ||
+      quality.information_ratio < options.min_information_ratio ||
+      quality.dynamic_rank < quality.baseline_rank;
+  return quality;
 }
 
 DynamicPointFilter::DynamicPointFilter(DynamicFilterOptions options) {
@@ -120,18 +196,6 @@ double DynamicPointFilter::labelWeight(const MotionLabel label) const {
     default:
       return options_.unknown_weight;
   }
-}
-
-double DynamicPointFilter::cauchyWeight(const double residual) const {
-  if (!std::isfinite(residual) || !std::isfinite(options_.robust_scale) ||
-      options_.robust_scale <= 0.0) {
-    return 0.0;
-  }
-  const double ratio = residual / options_.robust_scale;
-  if (!std::isfinite(ratio)) return 0.0;
-  const double squared_ratio = ratio * ratio;
-  if (!std::isfinite(squared_ratio)) return 0.0;
-  return 1.0 / (1.0 + squared_ratio);
 }
 
 TemporalVoxelMap::TemporalVoxelMap(DynamicFilterOptions options) {
@@ -264,10 +328,28 @@ TemporalVoxelMap::Points TemporalVoxelMap::update(
     const bool stale = frame_id > state.last_seen_frame &&
         frame_id - state.last_seen_frame >
             static_cast<std::uint64_t>(options_.max_unseen_frames);
-    if (!state.promoted && stale) {
+    if (stale) {
       iter = voxels_.erase(iter);
     } else {
       ++iter;
+    }
+  }
+
+  const std::size_t maximum_voxels =
+      static_cast<std::size_t>(options_.max_voxels);
+  if (voxels_.size() > maximum_voxels) {
+    std::vector<std::pair<std::uint64_t, VoxelKey>> by_last_seen;
+    by_last_seen.reserve(voxels_.size());
+    for (const auto& [key, state] : voxels_) {
+      by_last_seen.emplace_back(state.last_seen_frame, key);
+    }
+    std::sort(by_last_seen.begin(), by_last_seen.end(),
+              [](const auto& left, const auto& right) {
+                return left.first < right.first;
+              });
+    const std::size_t remove_count = voxels_.size() - maximum_voxels;
+    for (std::size_t index = 0; index < remove_count; ++index) {
+      voxels_.erase(by_last_seen[index].second);
     }
   }
 

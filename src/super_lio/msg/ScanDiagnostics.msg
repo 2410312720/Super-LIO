@@ -11,6 +11,24 @@ uint32 knn_candidate_count
 uint32 matched_point_count
 float64 match_fraction
 
+bool dynamic_filter_enabled
+bool dynamic_pose_filter_enabled
+bool dynamic_map_filter_enabled
+uint32 dynamic_static_point_count
+uint32 dynamic_unknown_point_count
+uint32 dynamic_candidate_point_count
+uint32 dynamic_confirmed_point_count
+float64 dynamic_ratio
+uint32 dynamic_effective_point_count
+float64 dynamic_information_ratio
+uint32 dynamic_baseline_information_rank
+uint32 dynamic_weighted_information_rank
+bool dynamic_fallback_required
+bool dynamic_fallback_used
+bool dynamic_map_update_skipped
+uint32 dynamic_promoted_point_count
+uint64 dynamic_temporal_voxel_count
+
 float64 residual_mean_m
 float64 residual_abs_mean_m
 float64 residual_rmse_m

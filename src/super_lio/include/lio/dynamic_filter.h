@@ -18,18 +18,17 @@ struct DynamicFilterOptions {
   bool filter_map_update = true;
   bool filter_saved_map = true;
   bool publish_debug_clouds = true;
+  int debug_publish_every_n_frames = 5;
 
   double temporal_voxel_size = 0.25;
   int static_confirm_frames = 3;
   int max_unseen_frames = 20;
+  int max_voxels = 200000;
   double max_static_variance = 0.01;
 
   double residual_base = 0.10;
   double residual_range_scale = 0.003;
   double dynamic_residual_multiplier = 2.5;
-
-  double robust_scale = 0.15;
-  double observation_inv_variance = 1000.0;
 
   double static_weight = 1.0;
   double unknown_weight = 0.25;
@@ -37,8 +36,10 @@ struct DynamicFilterOptions {
   double dynamic_weight = 0.0;
 
   int min_effective_points = 40;
+  double min_information_ratio = 0.35;
 
   int init_collect_frames = 6;
+  int init_max_collect_frames = 30;
   int init_static_min_hits = 3;
   int init_min_static_points = 100;
 
@@ -63,6 +64,23 @@ struct PointMotionEvidence {
   MotionLabel label = MotionLabel::UNKNOWN;
 };
 
+struct DynamicObservationQuality {
+  std::size_t effective_point_count = 0;
+  double information_ratio = 0.0;
+  int baseline_rank = 0;
+  int dynamic_rank = 0;
+  bool fallback_required = true;
+};
+
+// Compares the dynamically weighted observation against the exact baseline
+// observation assembled from the same correspondences. Both matrices are
+// expected to be symmetric positive semidefinite information matrices.
+DynamicObservationQuality evaluateDynamicObservationQuality(
+    const BASIC::M6d& dynamic_information,
+    const BASIC::M6d& baseline_information,
+    std::size_t effective_point_count,
+    const DynamicFilterOptions& options);
+
 class DynamicPointFilter {
 public:
   explicit DynamicPointFilter(DynamicFilterOptions options = {});
@@ -72,7 +90,6 @@ public:
 
   MotionLabel classify(bool plane_valid, double residual, double range) const;
   double labelWeight(MotionLabel label) const;
-  double cauchyWeight(double residual) const;
 
 private:
   DynamicFilterOptions options_;

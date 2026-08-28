@@ -1,0 +1,85 @@
+/**:
+  ros__parameters:
+    # Shadow-flight profile: Super-LIO runs its full dynamic pose/map path for
+    # evaluation, while PX4 must receive NOKOV through nokov_mocap_config.yaml.
+    lio.map.save_map: false
+    lio.map.if_filter: true
+    lio.map.save_map_dir: "map"
+    lio.map.map_name: "map.pcd"
+    lio.map.ds_size: 0.25
+    lio.map.save_interval: 500
+
+    lio.ros.lidar_topic: "/livox/lidar"
+    lio.ros.imu_topic: "/livox/imu"
+
+    lio.sensor.lidar_type: 1
+    lio.sensor.blind: 2.0
+    lio.sensor.maxrange: 60.0
+    lio.sensor.filter_rate: 2
+    lio.sensor.enable_downsample: true
+    lio.sensor.voxel_fliter_size: 0.25
+    lio.sensor.gravity_norm: 9.7946
+    lio.sensor.imu_type: 1
+    lio.sensor.imu_na: 0.1
+    lio.sensor.imu_ng: 0.1
+    lio.sensor.imu_nba: 0.0001
+    lio.sensor.imu_nbg: 0.0001
+
+    lio.extrinsic.lidar_imu: [-0.011, -0.02329, 0.04412,
+                              1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+    lio.extrinsic.odom_robo: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    lio.hash_map.hash_capacity: 2000000
+    lio.hash_map.vox_resolution: 0.25
+
+    lio.kf.kf_type: 0
+    lio.kf.kf_max_iterations: 4
+    lio.kf.kf_align_gravity: true
+    lio.kf.kf_quit_eps: 0.001
+
+    lio.observation.point_to_plane_information: 1000.0
+    lio.observation.robust_kernel: "none"
+    lio.observation.robust_scale_m: 0.03
+
+    # Keep /lio/robo/odom for comparison, but do not create the legacy MAVROS
+    # vision-pose output. The PX4 bridge must be configured for NOKOV.
+    lio.output.robot: false
+    lio.output.plan_env_world: false
+    lio.output.plan_env_body: false
+    lio.output.ml_map: false
+    lio.output.planner: false
+    lio.output.map: false
+    lio.output.dense: false
+    lio.output.pub_step: 1
+    lio.output.forward_holdback_ms: 20.0
+
+    lio.eva.timer: false
+    lio.eva.publish_diagnostics: true
+    lio.eva.diagnostics_publish_every_n_frames: 5
+
+    lio.dynamic.enable: true
+    lio.dynamic.filter_pose_update: true
+    lio.dynamic.filter_map_update: true
+    lio.dynamic.filter_saved_map: true
+    lio.dynamic.publish_debug_clouds: false
+    lio.dynamic.debug_publish_every_n_frames: 5
+    lio.dynamic.temporal_voxel_size: 0.25
+    lio.dynamic.static_confirm_frames: 6
+    lio.dynamic.max_unseen_frames: 20
+    lio.dynamic.max_voxels: 200000
+    lio.dynamic.max_static_variance: 0.01
+    lio.dynamic.residual_base: 0.10
+    lio.dynamic.residual_range_scale: 0.003
+    lio.dynamic.dynamic_residual_multiplier: 2.5
+    lio.dynamic.static_weight: 1.0
+    lio.dynamic.unknown_weight: 0.25
+    lio.dynamic.candidate_weight: 0.05
+    lio.dynamic.dynamic_weight: 0.0
+    lio.dynamic.min_effective_points: 40
+    lio.dynamic.min_information_ratio: 0.35
+    lio.dynamic.init_collect_frames: 8
+    lio.dynamic.init_max_collect_frames: 30
+    lio.dynamic.init_static_min_hits: 5
+    lio.dynamic.init_min_static_points: 100

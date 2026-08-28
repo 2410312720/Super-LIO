@@ -273,15 +273,36 @@ void SuperLIOReLoc::UpdateMap() {
   newly_promoted_points_world_.clear();
   if (ptsize == 0) {
     points_world_v3_.clear();
+    dynamic_map_update_skipped_this_frame_ = g_update_map;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped =
+          dynamic_map_update_skipped_this_frame_;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     return;
   }
 
   // World points are always required for debug output, even in localization-only mode.
   transformCurrentPointsToWorld();
-  if (!g_update_map) return;
+  if (!g_update_map) {
+    dynamic_map_update_skipped_this_frame_ = true;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped = true;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
+    return;
+  }
 
   if(map_update_delay_frames_ > 0){
     --map_update_delay_frames_;
+    dynamic_map_update_skipped_this_frame_ = true;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped = true;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     std::cout << "Update map Delay: " << 100 - map_update_delay_frames_
               << " %" << std::endl;
     return;

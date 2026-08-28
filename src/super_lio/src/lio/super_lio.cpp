@@ -319,6 +319,11 @@ bool SuperLIO::map_init(){
 
   init_frame_points_world_.push_back(aggregateInitializationFrame(
       points_world_v3_, g_dynamic_filter_options.temporal_voxel_size));
+  const std::size_t maximum_initialization_frames = static_cast<std::size_t>(
+      g_dynamic_filter_options.init_max_collect_frames);
+  if (init_frame_points_world_.size() > maximum_initialization_frames) {
+    init_frame_points_world_.erase(init_frame_points_world_.begin());
+  }
   if (init_frame_count_ < g_dynamic_filter_options.init_collect_frames) {
     return false;
   }
@@ -345,14 +350,11 @@ bool SuperLIO::map_init(){
   }
 
   VV3 static_seed_points;
-  VV3 fallback_points;
   static_seed_points.reserve(initialization_voxels.size());
-  fallback_points.reserve(initialization_voxels.size());
   for (const auto& [key, accumulator] : initialization_voxels) {
     (void)key;
     if (accumulator.count == 0) continue;
     const V3 mean = initializationMean(accumulator);
-    fallback_points.push_back(mean);
     if (accumulator.count >= static_cast<std::size_t>(
             g_dynamic_filter_options.init_static_min_hits) &&
         initializationPositionVariance(accumulator) <=
@@ -364,19 +366,19 @@ bool SuperLIO::map_init(){
   if (static_seed_points.empty() ||
       static_seed_points.size() < static_cast<std::size_t>(
           g_dynamic_filter_options.init_min_static_points)) {
-    LOG(WARNING) << YELLOW
+    LOG_EVERY_N(WARNING, 10) << YELLOW
                  << " ---> [DynamicFilter] Only " << static_seed_points.size()
-                 << " confirmed static initialization voxels; using "
-                 << fallback_points.size() << " voxel representatives."
+                 << " confirmed static initialization voxels; need "
+                 << g_dynamic_filter_options.init_min_static_points
+                 << ". Continue collecting without publishing odometry."
                  << RESET;
-    ivox_->insert(fallback_points);
-  } else {
-    ivox_->insert(static_seed_points);
+    return false;
   }
+  ivox_->insert(static_seed_points);
   init_frame_points_world_.clear();
   init_frame_points_world_.shrink_to_fit();
   temporal_voxel_map_.clear();
-  if (!initialization_voxels.empty()) {
+  if (!static_seed_points.empty()) {
     g_flg_map_init = false;
     return true;
   }
@@ -390,9 +392,13 @@ bool SuperLIO::map_init(){
 
 void SuperLIO::stateProcess(){
   ++processing_frame_id_;
-  if (g_publish_diagnostics) {
+  const std::uint64_t scan_sequence = diagnostic_scan_sequence_++;
+  collect_diagnostics_this_frame_ = g_publish_diagnostics &&
+      scan_sequence % static_cast<std::uint64_t>(
+          g_diagnostics_publish_every_n_frames) == 0;
+  if (collect_diagnostics_this_frame_) {
     scan_diagnostics_ = ScanDiagnosticsData{};
-    scan_diagnostics_.scan_sequence = diagnostic_scan_sequence_++;
+    scan_diagnostics_.scan_sequence = scan_sequence;
     scan_diagnostics_.scan_start_time = measures_.lidar.start_time;
     scan_diagnostics_.scan_end_time = measures_.lidar.end_time;
     scan_diagnostics_.input_point_count = measures_.lidar.input_point_count;
@@ -638,7 +644,7 @@ void SuperLIO::Propagation_Undistort(){
   const double start_time = measures_.lidar.start_time;
   auto& raw_pc = measures_.lidar.pc;
 
-  if (g_publish_diagnostics) {
+  if (collect_diagnostics_this_frame_) {
     scan_diagnostics_.filtered_point_count = raw_pc->size();
     const double last_state_time = propagate_states_.back().time;
     scan_diagnostics_.imu_state_end_lag_ms =
@@ -707,7 +713,7 @@ void SuperLIO::Propagation_Undistort(){
 void SuperLIO::DownSample(){
   voxel_grid_fliter_.setInputCloud(scan_undistort_full_);
   voxel_grid_fliter_.filter(ds_undistort_);
-  if (g_publish_diagnostics) {
+  if (collect_diagnostics_this_frame_) {
     scan_diagnostics_.downsampled_point_count = ds_undistort_->size();
   }
 }
@@ -716,8 +722,8 @@ void SuperLIO::DownSample(){
 struct ThreadACC{
   M6d dynamic_HTVH = M6d::Zero();
   V6d dynamic_HTVr = V6d::Zero();
-  M6d fallback_HTVH = M6d::Zero();
-  V6d fallback_HTVr = V6d::Zero();
+  M6d baseline_HTVH = M6d::Zero();
+  V6d baseline_HTVr = V6d::Zero();
   std::size_t dynamic_effective_points = 0;
   std::vector<double> residuals;
 };
@@ -745,6 +751,10 @@ void SuperLIO::Observe(){
   motion_evidence_.assign(ptsize, PointMotionEvidence{});
   effect_knn_idxs_.resize(ptsize);
   tracking_degraded_this_frame_ = false;
+  dynamic_observation_quality_ = DynamicObservationQuality{};
+  dynamic_fallback_required_this_frame_ = false;
+  dynamic_fallback_used_this_frame_ = false;
+  dynamic_map_update_skipped_this_frame_ = false;
 
   effect_knn_num_ = ptsize;
   std::iota(effect_knn_idxs_.begin(), effect_knn_idxs_.begin() + ptsize, 0);
@@ -763,7 +773,7 @@ void SuperLIO::Observe(){
   std::vector<ObservationIterationSummary> observation_iterations;
   std::vector<ESKF::IterationDiagnostic> filter_iterations;
   ESKF::IterationDiagnosticFunc iteration_diagnostic;
-  if (g_publish_diagnostics) {
+  if (collect_diagnostics_this_frame_) {
     iteration_diagnostic = [&](const ESKF::IterationDiagnostic& diagnostic) {
       filter_iterations.push_back(diagnostic);
     };
@@ -833,36 +843,31 @@ void SuperLIO::Observe(){
                   g_observation_robust_kernel, error,
                   g_observation_robust_scale_m);
             }
-            if (g_publish_diagnostics) {
+            if (collect_diagnostics_this_frame_) {
               local_acc.residuals.push_back(static_cast<double>(error));
             }
 
-            if (!g_dynamic_filter_options.enable ||
-                !g_dynamic_filter_options.filter_pose_update) {
-              const double observation_information =
-                  g_point_to_plane_information * observation_robust_weight;
-              local_acc.dynamic_HTVH +=
-                  J * observation_information * J.transpose();
-              local_acc.dynamic_HTVr -=
-                  J * observation_information * error;
+            const double baseline_omega =
+                g_point_to_plane_information * observation_robust_weight;
+            if (!std::isfinite(baseline_omega) ||
+                baseline_omega <= std::numeric_limits<double>::epsilon()) {
               continue;
             }
+            local_acc.baseline_HTVH +=
+                J * baseline_omega * J.transpose();
+            local_acc.baseline_HTVr -= J * baseline_omega * error;
 
-            const double robust_weight =
-              dynamic_filter_.cauchyWeight(point_residuals_[idx]);
-            const double fallback_omega =
-              g_dynamic_filter_options.observation_inv_variance *
-              observation_robust_weight * robust_weight;
-            if (std::isfinite(fallback_omega) &&
-                fallback_omega > std::numeric_limits<double>::epsilon()) {
-              local_acc.fallback_HTVH +=
-                J * fallback_omega * J.transpose();
-              local_acc.fallback_HTVr -= J * fallback_omega * error;
+            if (!g_dynamic_filter_options.enable) {
+              local_acc.dynamic_HTVH +=
+                  J * baseline_omega * J.transpose();
+              local_acc.dynamic_HTVr -= J * baseline_omega * error;
+              ++local_acc.dynamic_effective_points;
+              continue;
             }
 
             const double motion_weight =
               dynamic_filter_.labelWeight(motion_labels_[idx]);
-            const double omega = fallback_omega * motion_weight;
+            const double omega = baseline_omega * motion_weight;
             if (!std::isfinite(omega) ||
                 omega <= std::numeric_limits<double>::epsilon()) {
               continue;
@@ -876,33 +881,45 @@ void SuperLIO::Observe(){
 
     M6d dynamic_HTVH = M6d::Zero();
     V6d dynamic_HTVr = V6d::Zero();
-    M6d fallback_HTVH = M6d::Zero();
-    V6d fallback_HTVr = V6d::Zero();
+    M6d baseline_HTVH = M6d::Zero();
+    V6d baseline_HTVr = V6d::Zero();
     std::size_t dynamic_effective_points = 0;
     for(const auto& local_acc : tls_acc){
       dynamic_HTVH += local_acc.dynamic_HTVH;
       dynamic_HTVr += local_acc.dynamic_HTVr;
-      fallback_HTVH += local_acc.fallback_HTVH;
-      fallback_HTVr += local_acc.fallback_HTVr;
+      baseline_HTVH += local_acc.baseline_HTVH;
+      baseline_HTVr += local_acc.baseline_HTVr;
       dynamic_effective_points += local_acc.dynamic_effective_points;
     }
 
+    DynamicObservationQuality quality = evaluateDynamicObservationQuality(
+        dynamic_HTVH, baseline_HTVH, dynamic_effective_points,
+        g_dynamic_filter_options);
+    if (!g_dynamic_filter_options.enable) {
+      quality.fallback_required = false;
+    }
+    dynamic_observation_quality_ = quality;
+    dynamic_fallback_required_this_frame_ =
+        dynamic_fallback_required_this_frame_ || quality.fallback_required;
     const bool dynamic_pose_filtering = g_dynamic_filter_options.enable &&
         g_dynamic_filter_options.filter_pose_update;
-    const bool use_fallback = dynamic_pose_filtering &&
-        dynamic_effective_points < static_cast<std::size_t>(
-          g_dynamic_filter_options.min_effective_points);
+    const bool use_fallback =
+        dynamic_pose_filtering && quality.fallback_required;
+    dynamic_fallback_used_this_frame_ =
+        dynamic_fallback_used_this_frame_ || use_fallback;
     tracking_degraded_this_frame_ =
         tracking_degraded_this_frame_ || use_fallback;
-    if (use_fallback) {
-      HTVH = fallback_HTVH.cast<scalar>();
-      HTVr = fallback_HTVr.cast<scalar>();
-    } else {
+    if (dynamic_pose_filtering && !use_fallback) {
       HTVH = dynamic_HTVH.cast<scalar>();
       HTVr = dynamic_HTVr.cast<scalar>();
+    } else {
+      // Pose-filter bypass, disabled mode, and degraded dynamic mode all use
+      // the exact observation assembled by the validated baseline path.
+      HTVH = baseline_HTVH.cast<scalar>();
+      HTVr = baseline_HTVr.cast<scalar>();
     }
 
-    if (g_publish_diagnostics) {
+    if (collect_diagnostics_this_frame_) {
       std::vector<double> residuals;
       for (const auto& local_acc : tls_acc) {
         residuals.insert(
@@ -944,7 +961,7 @@ void SuperLIO::Observe(){
         *imu_at_scan_end, measures_.imu_after_lidar_end);
   }
 
-  if (g_publish_diagnostics) {
+  if (collect_diagnostics_this_frame_) {
     const SysState state_after = kf_->GetSysState();
     const ESKF::COV covariance_after = kf_->GetCov();
     const V3 rotation_correction =
@@ -1099,6 +1116,38 @@ void SuperLIO::Observe(){
       ? 0.0
       : static_cast<double>(dynamic_points) / static_cast<double>(ptsize);
 
+  if (collect_diagnostics_this_frame_) {
+    scan_diagnostics_.dynamic_filter_enabled =
+        g_dynamic_filter_options.enable;
+    scan_diagnostics_.dynamic_pose_filter_enabled =
+        g_dynamic_filter_options.enable &&
+        g_dynamic_filter_options.filter_pose_update;
+    scan_diagnostics_.dynamic_map_filter_enabled =
+        g_dynamic_filter_options.enable &&
+        g_dynamic_filter_options.filter_map_update;
+    scan_diagnostics_.dynamic_static_point_count = static_point_count_;
+    scan_diagnostics_.dynamic_unknown_point_count = unknown_point_count_;
+    scan_diagnostics_.dynamic_candidate_point_count =
+        dynamic_candidate_count_;
+    scan_diagnostics_.dynamic_confirmed_point_count =
+        dynamic_confirmed_count_;
+    scan_diagnostics_.dynamic_ratio = dynamic_ratio_;
+    scan_diagnostics_.dynamic_effective_point_count =
+        dynamic_observation_quality_.effective_point_count;
+    scan_diagnostics_.dynamic_information_ratio =
+        dynamic_observation_quality_.information_ratio;
+    scan_diagnostics_.dynamic_baseline_information_rank =
+        static_cast<std::uint32_t>(
+            std::max(0, dynamic_observation_quality_.baseline_rank));
+    scan_diagnostics_.dynamic_weighted_information_rank =
+        static_cast<std::uint32_t>(
+            std::max(0, dynamic_observation_quality_.dynamic_rank));
+    scan_diagnostics_.dynamic_fallback_required =
+        dynamic_fallback_required_this_frame_;
+    scan_diagnostics_.dynamic_fallback_used =
+        dynamic_fallback_used_this_frame_;
+  }
+
 }
 
 
@@ -1107,6 +1156,15 @@ void SuperLIO::UpdateMap() {
   newly_promoted_points_world_.clear();
   if (ptsize == 0) {
     points_world_v3_.clear();
+    dynamic_map_update_skipped_this_frame_ =
+        g_dynamic_filter_options.enable &&
+        g_dynamic_filter_options.filter_map_update;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped =
+          dynamic_map_update_skipped_this_frame_;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     return;
   }
 
@@ -1134,20 +1192,38 @@ void SuperLIO::updateMapFromCurrentWorldPoints() {
   if (!g_dynamic_filter_options.enable ||
       !g_dynamic_filter_options.filter_map_update) {
     ivox_->insert(points_world_v3_);
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped = false;
+      scan_diagnostics_.dynamic_promoted_point_count = 0;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     return;
   }
 
   if (tracking_degraded_this_frame_) {
-    LOG(WARNING) << YELLOW
+    dynamic_map_update_skipped_this_frame_ = true;
+    LOG_EVERY_N(WARNING, 10) << YELLOW
                  << " ---> [DynamicFilter] Tracking fallback active; skip map update for frame "
                  << processing_frame_id_ << RESET;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped = true;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     return;
   }
 
   if (points_world_v3_.size() != motion_labels_.size()) {
+    dynamic_map_update_skipped_this_frame_ = true;
     LOG(WARNING) << YELLOW
                  << " ---> [DynamicFilter] Label/point size mismatch; skip map update."
                  << RESET;
+    if (collect_diagnostics_this_frame_) {
+      scan_diagnostics_.dynamic_map_update_skipped = true;
+      scan_diagnostics_.dynamic_temporal_voxel_count =
+          temporal_voxel_map_.size();
+    }
     return;
   }
 
@@ -1176,12 +1252,24 @@ void SuperLIO::updateMapFromCurrentWorldPoints() {
       newly_promoted_points_world_.end());
   ivox_->insert(static_points_world);
 
+  if (collect_diagnostics_this_frame_) {
+    scan_diagnostics_.dynamic_map_update_skipped = false;
+    scan_diagnostics_.dynamic_promoted_point_count =
+        newly_promoted_points_world_.size();
+    scan_diagnostics_.dynamic_temporal_voxel_count =
+        temporal_voxel_map_.size();
+  }
+
 }
 
 
 void SuperLIO::publishDynamicDebugClouds() {
   if (!g_dynamic_filter_options.enable ||
       !g_dynamic_filter_options.publish_debug_clouds) {
+    return;
+  }
+  if (processing_frame_id_ % static_cast<std::uint64_t>(
+          g_dynamic_filter_options.debug_publish_every_n_frames) != 0) {
     return;
   }
   if (points_world_v3_.size() != motion_labels_.size() ||
@@ -1222,13 +1310,14 @@ void SuperLIO::publishDynamicDebugClouds() {
 
   data_wrapper_->pub_dynamic_debug_clouds(
       static_cloud, dynamic_cloud, unknown_cloud,
-      static_cast<float>(dynamic_ratio_), measures_.lidar.end_time);
+      measures_.lidar.end_time);
 }
 
 
 void SuperLIO::Output(){
   auto state = kf_->GetNavState();
-  data_wrapper_->pub_odom(state);  
+  data_wrapper_->pub_odom(state);
+  data_wrapper_->pub_dynamic_ratio(static_cast<float>(dynamic_ratio_));
   publishDynamicDebugClouds();
 
   Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();

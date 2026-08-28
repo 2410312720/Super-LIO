@@ -98,6 +98,11 @@ protected:
   std::size_t dynamic_candidate_count_ = 0;
   std::size_t dynamic_confirmed_count_ = 0;
   double dynamic_ratio_ = 0.0;
+  DynamicObservationQuality dynamic_observation_quality_;
+  bool dynamic_fallback_required_this_frame_ = false;
+  bool dynamic_fallback_used_this_frame_ = false;
+  bool dynamic_map_update_skipped_this_frame_ = false;
+  bool collect_diagnostics_this_frame_ = false;
   int pcd_index_ = -1;
 
   Timer time_record_;

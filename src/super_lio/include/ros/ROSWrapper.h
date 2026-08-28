@@ -81,7 +81,8 @@ public:
       const BASIC::CloudPtr& static_cloud,
       const BASIC::CloudPtr& dynamic_cloud,
       const BASIC::CloudPtr& unknown_cloud,
-      float dynamic_ratio, double time);
+      double time);
+  void pub_dynamic_ratio(float dynamic_ratio);
   void pub_cloud2planner(const BASIC::CloudPtr& pc, double time);
   void pub_cloud_world_pose(const BASIC::CloudPtr& pc, 
                             const NavState& state);

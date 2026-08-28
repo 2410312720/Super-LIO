@@ -14,17 +14,24 @@ def generate_launch_description():
 
     declare_rviz_arg = DeclareLaunchArgument(
         'rviz',
-        default_value='true',
+        default_value='false',
         description='Whether to start RVIZ2'
     )
     rviz_flag = LaunchConfiguration('rviz')
+
+    declare_config_arg = DeclareLaunchArgument(
+        'config_file',
+        default_value=config_yaml,
+        description='Super-LIO ROS parameter YAML file'
+    )
+    config_file = LaunchConfiguration('config_file')
 
     super_lio_node = Node(
         package='super_lio',
         executable='super_lio_node',
         name='super_lio_node',
         output='screen',
-        parameters=[config_yaml],
+        parameters=[config_file],
         arguments=['--ros-args', '--log-level', 'info']
     )
 
@@ -38,6 +45,7 @@ def generate_launch_description():
 
     ld = LaunchDescription()
     ld.add_action(declare_rviz_arg)
+    ld.add_action(declare_config_arg)
     ld.add_action(super_lio_node)
     ld.add_action(rviz2_node)
 

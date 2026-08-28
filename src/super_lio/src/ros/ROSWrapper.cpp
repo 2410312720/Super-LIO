@@ -106,6 +106,16 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<bool>("lio.eva.publish_diagnostics", false);
   node.get_parameter("lio.eva.publish_diagnostics", g_publish_diagnostics);
 
+  node.declare_parameter<int>(
+      "lio.eva.diagnostics_publish_every_n_frames", 1);
+  node.get_parameter(
+      "lio.eva.diagnostics_publish_every_n_frames",
+      g_diagnostics_publish_every_n_frames);
+  if (g_diagnostics_publish_every_n_frames < 1) {
+    throw std::invalid_argument(
+        "lio.eva.diagnostics_publish_every_n_frames must be at least one");
+  }
+
   node.declare_parameter<bool>("lio.map.if_filter", false);
   node.get_parameter("lio.map.if_filter", g_if_filter);
 
@@ -368,6 +378,10 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.get_parameter("lio.dynamic.filter_saved_map", dynamic.filter_saved_map);
   node.declare_parameter<bool>("lio.dynamic.publish_debug_clouds", true);
   node.get_parameter("lio.dynamic.publish_debug_clouds", dynamic.publish_debug_clouds);
+  node.declare_parameter<int>("lio.dynamic.debug_publish_every_n_frames", 5);
+  node.get_parameter(
+      "lio.dynamic.debug_publish_every_n_frames",
+      dynamic.debug_publish_every_n_frames);
 
   node.declare_parameter<double>("lio.dynamic.temporal_voxel_size", 0.25);
   node.get_parameter("lio.dynamic.temporal_voxel_size", dynamic.temporal_voxel_size);
@@ -375,6 +389,8 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.get_parameter("lio.dynamic.static_confirm_frames", dynamic.static_confirm_frames);
   node.declare_parameter<int>("lio.dynamic.max_unseen_frames", 20);
   node.get_parameter("lio.dynamic.max_unseen_frames", dynamic.max_unseen_frames);
+  node.declare_parameter<int>("lio.dynamic.max_voxels", 200000);
+  node.get_parameter("lio.dynamic.max_voxels", dynamic.max_voxels);
   node.declare_parameter<double>("lio.dynamic.max_static_variance", 0.01);
   node.get_parameter("lio.dynamic.max_static_variance", dynamic.max_static_variance);
 
@@ -384,11 +400,6 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.get_parameter("lio.dynamic.residual_range_scale", dynamic.residual_range_scale);
   node.declare_parameter<double>("lio.dynamic.dynamic_residual_multiplier", 2.5);
   node.get_parameter("lio.dynamic.dynamic_residual_multiplier", dynamic.dynamic_residual_multiplier);
-
-  node.declare_parameter<double>("lio.dynamic.robust_scale", 0.15);
-  node.get_parameter("lio.dynamic.robust_scale", dynamic.robust_scale);
-  node.declare_parameter<double>("lio.dynamic.observation_inv_variance", 1000.0);
-  node.get_parameter("lio.dynamic.observation_inv_variance", dynamic.observation_inv_variance);
 
   node.declare_parameter<double>("lio.dynamic.static_weight", 1.0);
   node.get_parameter("lio.dynamic.static_weight", dynamic.static_weight);
@@ -401,8 +412,14 @@ void LoadParamFromRos(rclcpp::Node& node)
 
   node.declare_parameter<int>("lio.dynamic.min_effective_points", 40);
   node.get_parameter("lio.dynamic.min_effective_points", dynamic.min_effective_points);
+  node.declare_parameter<double>("lio.dynamic.min_information_ratio", 0.35);
+  node.get_parameter(
+      "lio.dynamic.min_information_ratio", dynamic.min_information_ratio);
   node.declare_parameter<int>("lio.dynamic.init_collect_frames", 6);
   node.get_parameter("lio.dynamic.init_collect_frames", dynamic.init_collect_frames);
+  node.declare_parameter<int>("lio.dynamic.init_max_collect_frames", 30);
+  node.get_parameter(
+      "lio.dynamic.init_max_collect_frames", dynamic.init_max_collect_frames);
   node.declare_parameter<int>("lio.dynamic.init_static_min_hits", 3);
   node.get_parameter("lio.dynamic.init_static_min_hits", dynamic.init_static_min_hits);
   node.declare_parameter<int>("lio.dynamic.init_min_static_points", 100);
@@ -420,6 +437,7 @@ void LoadParamFromRos(rclcpp::Node& node)
             << ", saved_map=" << dynamic.filter_saved_map
             << ", voxel=" << dynamic.temporal_voxel_size
             << ", confirm_frames=" << dynamic.static_confirm_frames
+            << ", min_information_ratio=" << dynamic.min_information_ratio
             << RESET;
 
   LOG(INFO) << GREEN << " ---> [Params]: Load from ROS2 parameter server."
@@ -572,6 +590,12 @@ void ROSWrapper::setupIO(){
     this->create_publisher<sensor_msgs::msg::PointCloud2>(
         "/lio/cloud_world", 10);
 
+  if (g_dynamic_filter_options.enable) {
+    pub_dynamic_ratio_ =
+      this->create_publisher<std_msgs::msg::Float32>(
+          "/lio/dynamic_ratio", 5);
+  }
+
   if (g_dynamic_filter_options.enable &&
       g_dynamic_filter_options.publish_debug_clouds) {
     pub_cloud_static_ =
@@ -583,15 +607,13 @@ void ROSWrapper::setupIO(){
     pub_cloud_unknown_ =
       this->create_publisher<sensor_msgs::msg::PointCloud2>(
           "/lio/cloud_unknown", 5);
-    pub_dynamic_ratio_ =
-      this->create_publisher<std_msgs::msg::Float32>(
-          "/lio/dynamic_ratio", 5);
   }
 
   if (g_publish_diagnostics) {
     pub_scan_diagnostics_ =
         this->create_publisher<super_lio::msg::ScanDiagnostics>(
-            "/lio/diagnostics/scan", rclcpp::QoS(50).reliable());
+            "/lio/diagnostics/scan",
+            rclcpp::QoS(rclcpp::KeepLast(10)).best_effort());
   }
 
   forward_output_timer_ = this->create_wall_timer(
@@ -622,6 +644,35 @@ void ROSWrapper::pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics)
   message.knn_candidate_count = static_cast<std::uint32_t>(diagnostics.knn_candidate_count);
   message.matched_point_count = static_cast<std::uint32_t>(diagnostics.matched_point_count);
   message.match_fraction = diagnostics.match_fraction;
+  message.dynamic_filter_enabled = diagnostics.dynamic_filter_enabled;
+  message.dynamic_pose_filter_enabled =
+      diagnostics.dynamic_pose_filter_enabled;
+  message.dynamic_map_filter_enabled =
+      diagnostics.dynamic_map_filter_enabled;
+  message.dynamic_static_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_static_point_count);
+  message.dynamic_unknown_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_unknown_point_count);
+  message.dynamic_candidate_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_candidate_point_count);
+  message.dynamic_confirmed_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_confirmed_point_count);
+  message.dynamic_ratio = diagnostics.dynamic_ratio;
+  message.dynamic_effective_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_effective_point_count);
+  message.dynamic_information_ratio = diagnostics.dynamic_information_ratio;
+  message.dynamic_baseline_information_rank =
+      diagnostics.dynamic_baseline_information_rank;
+  message.dynamic_weighted_information_rank =
+      diagnostics.dynamic_weighted_information_rank;
+  message.dynamic_fallback_required = diagnostics.dynamic_fallback_required;
+  message.dynamic_fallback_used = diagnostics.dynamic_fallback_used;
+  message.dynamic_map_update_skipped =
+      diagnostics.dynamic_map_update_skipped;
+  message.dynamic_promoted_point_count = static_cast<std::uint32_t>(
+      diagnostics.dynamic_promoted_point_count);
+  message.dynamic_temporal_voxel_count = static_cast<std::uint64_t>(
+      diagnostics.dynamic_temporal_voxel_count);
   message.residual_mean_m = diagnostics.residual.mean;
   message.residual_abs_mean_m = diagnostics.residual.absolute_mean;
   message.residual_rmse_m = diagnostics.residual.rmse;
@@ -1085,12 +1136,10 @@ void ROSWrapper::pub_cloud_world(const CloudPtr& pc, double time){
 
 void ROSWrapper::pub_dynamic_debug_clouds(
     const CloudPtr& static_cloud, const CloudPtr& dynamic_cloud,
-    const CloudPtr& unknown_cloud, const float dynamic_ratio,
-    const double time) {
+    const CloudPtr& unknown_cloud, const double time) {
   if (!g_dynamic_filter_options.enable ||
       !g_dynamic_filter_options.publish_debug_clouds ||
-      !pub_cloud_static_ || !pub_cloud_dynamic_ || !pub_cloud_unknown_ ||
-      !pub_dynamic_ratio_) {
+      !pub_cloud_static_ || !pub_cloud_dynamic_ || !pub_cloud_unknown_) {
     return;
   }
 
@@ -1107,7 +1156,12 @@ void ROSWrapper::pub_dynamic_debug_clouds(
   publish_cloud(static_cloud, pub_cloud_static_);
   publish_cloud(dynamic_cloud, pub_cloud_dynamic_);
   publish_cloud(unknown_cloud, pub_cloud_unknown_);
+}
 
+void ROSWrapper::pub_dynamic_ratio(const float dynamic_ratio) {
+  if (!g_dynamic_filter_options.enable || !pub_dynamic_ratio_) {
+    return;
+  }
   std_msgs::msg::Float32 ratio_message;
   ratio_message.data = dynamic_ratio;
   pub_dynamic_ratio_->publish(ratio_message);

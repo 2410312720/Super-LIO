@@ -55,6 +55,7 @@
 
     lio.eva.timer: true
     lio.eva.publish_diagnostics: true
+    lio.eva.diagnostics_publish_every_n_frames: 1
 
     # Dynamic filtering is opt-in. Set enable to true to activate it.
     lio.dynamic.enable: false
@@ -62,20 +63,22 @@
     lio.dynamic.filter_map_update: true
     lio.dynamic.filter_saved_map: true
     lio.dynamic.publish_debug_clouds: true
+    lio.dynamic.debug_publish_every_n_frames: 5
     lio.dynamic.temporal_voxel_size: 0.25
-    lio.dynamic.static_confirm_frames: 3
+    lio.dynamic.static_confirm_frames: 6
     lio.dynamic.max_unseen_frames: 20
+    lio.dynamic.max_voxels: 200000
     lio.dynamic.max_static_variance: 0.01
     lio.dynamic.residual_base: 0.10
     lio.dynamic.residual_range_scale: 0.003
     lio.dynamic.dynamic_residual_multiplier: 2.5
-    lio.dynamic.robust_scale: 0.15
-    lio.dynamic.observation_inv_variance: 1000.0
     lio.dynamic.static_weight: 1.0
     lio.dynamic.unknown_weight: 0.25
     lio.dynamic.candidate_weight: 0.05
     lio.dynamic.dynamic_weight: 0.0
     lio.dynamic.min_effective_points: 40
-    lio.dynamic.init_collect_frames: 6
-    lio.dynamic.init_static_min_hits: 3
+    lio.dynamic.min_information_ratio: 0.35
+    lio.dynamic.init_collect_frames: 8
+    lio.dynamic.init_max_collect_frames: 30
+    lio.dynamic.init_static_min_hits: 5
     lio.dynamic.init_min_static_points: 100
