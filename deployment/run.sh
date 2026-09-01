@@ -78,7 +78,7 @@ Usage:
 
 Modes:
   baseline  PX4 control source is Super-LIO /lio/robo/odom. Dynamic filtering
-            is disabled by livox_360.yaml. Add --nokov-shadow to validate and
+            is enabled by livox_360.yaml. Add --nokov-shadow to validate and
             record NOKOV /Robot_3/pose as a shadow-only reference.
 
   shadow    PX4 control source is NOKOV /Robot_3/pose. Super-LIO runs the full
@@ -326,7 +326,7 @@ configure_mode() {
       SUPER_LIO_CONFIG_NAME="livox_360.yaml"
       BRIDGE_CONFIG_NAME="super_lio_config.yaml"
       EXPECTED_CONTROL_TOPIC="$LIO_ODOM_TOPIC"
-      EXPECTED_DYNAMIC_ENABLE="false"
+      EXPECTED_DYNAMIC_ENABLE="true"
       if [[ "$NOKOV_SHADOW_ENABLED" == "true" ]]; then
         NOKOV_ROLE="shadow"
       fi
@@ -584,7 +584,7 @@ wait_for_stack() {
     required_topics+=("$NOKOV_TOPIC")
   fi
 
-  if [[ "$RUN_MODE" == "shadow" ]]; then
+  if [[ "$EXPECTED_DYNAMIC_ENABLE" == "true" ]]; then
     required_topics+=(/lio/dynamic_ratio)
   fi
 
@@ -622,6 +622,64 @@ parameter_must_match() {
     die "Unable to read ${node_name} ${parameter_name}"
   grep -Fqi "$expected_text" <<<"$output" || \
     die "${node_name} ${parameter_name} is not ${expected_text}: ${output}"
+}
+
+validate_dynamic_parameters() {
+  parameter_must_match \
+    /super_lio_node lio.dynamic.enable "$EXPECTED_DYNAMIC_ENABLE"
+  if [[ "$EXPECTED_DYNAMIC_ENABLE" == "true" ]]; then
+    parameter_must_match \
+      /super_lio_node lio.dynamic.filter_pose_update true
+    parameter_must_match \
+      /super_lio_node lio.dynamic.filter_map_update true
+  fi
+}
+
+runtime_boolean_parameter() {
+  local node_name="$1"
+  local parameter_name="$2"
+  local output
+  local value
+
+  output="$(timeout 12 ros2 param get "$node_name" "$parameter_name" 2>&1)" || \
+    die "Unable to read ${node_name} ${parameter_name}"
+  value="$(awk 'NF {value = tolower($NF)} END {print value}' <<<"$output")"
+  case "$value" in
+    true|false)
+      printf '%s\n' "$value"
+      ;;
+    *)
+      die "${node_name} ${parameter_name} is not a boolean: ${output}"
+      ;;
+  esac
+}
+
+append_dynamic_debug_topics() {
+  local topics_variable_name="$1"
+  local -n topics_ref="$topics_variable_name"
+  local dynamic_enabled
+  local debug_clouds_enabled
+
+  dynamic_enabled="$(runtime_boolean_parameter \
+    /super_lio_node lio.dynamic.enable)"
+  if [[ "$dynamic_enabled" != "true" ]]; then
+    log "Dynamic filtering is disabled at runtime; omitting debug clouds from MCAP"
+    return 0
+  fi
+
+  debug_clouds_enabled="$(runtime_boolean_parameter \
+    /super_lio_node lio.dynamic.publish_debug_clouds)"
+  if [[ "$debug_clouds_enabled" != "true" ]]; then
+    log "Dynamic debug clouds are disabled at runtime; omitting them from MCAP"
+    return 0
+  fi
+
+  topics_ref+=(
+    /lio/cloud_static
+    /lio/cloud_dynamic
+    /lio/cloud_unknown
+  )
+  log "Dynamic debug clouds are enabled at runtime; adding them to MCAP"
 }
 
 validate_topology() {
@@ -687,12 +745,9 @@ validate_topology() {
 
   parameter_must_match \
     /generic_odometry_node odometry_topic "$EXPECTED_CONTROL_TOPIC"
-  parameter_must_match \
-    /super_lio_node lio.dynamic.enable "$EXPECTED_DYNAMIC_ENABLE"
+  validate_dynamic_parameters
   if [[ "$RUN_MODE" == "shadow" ]]; then
     parameter_must_match /generic_odometry_node message_type pose_stamped
-    parameter_must_match /super_lio_node lio.dynamic.filter_pose_update true
-    parameter_must_match /super_lio_node lio.dynamic.filter_map_update true
   else
     parameter_must_match /generic_odometry_node message_type odometry
   fi
@@ -807,9 +862,10 @@ start_rosbag() {
   if nokov_is_required; then
     topics+=("$NOKOV_TOPIC")
   fi
-  if [[ "$RUN_MODE" == "shadow" ]]; then
+  if [[ "$EXPECTED_DYNAMIC_ENABLE" == "true" ]]; then
     topics+=(/lio/dynamic_ratio)
   fi
+  append_dynamic_debug_topics topics
 
   log "Starting MCAP recorder"
   setsid ros2 bag record \

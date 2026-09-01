@@ -55,14 +55,14 @@
 
     lio.eva.timer: true
     lio.eva.publish_diagnostics: true
-    lio.eva.diagnostics_publish_every_n_frames: 1
+    lio.eva.diagnostics_publish_every_n_frames: 5
 
     # Dynamic filtering is opt-in. Set enable to true to activate it.
-    lio.dynamic.enable: false
+    lio.dynamic.enable: true
     lio.dynamic.filter_pose_update: true
     lio.dynamic.filter_map_update: true
     lio.dynamic.filter_saved_map: true
-    lio.dynamic.publish_debug_clouds: true
+    lio.dynamic.publish_debug_clouds: false
     lio.dynamic.debug_publish_every_n_frames: 5
     lio.dynamic.temporal_voxel_size: 0.25
     lio.dynamic.static_confirm_frames: 6
