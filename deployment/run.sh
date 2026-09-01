@@ -55,6 +55,8 @@ BRIDGE_CONFIG_NAME=""
 BRIDGE_CONFIG=""
 EXPECTED_CONTROL_TOPIC=""
 EXPECTED_DYNAMIC_ENABLE=""
+NOKOV_SHADOW_ENABLED="false"
+NOKOV_ROLE="disabled"
 
 ODOM_BRIDGE_PID=""
 SUPER_LIO_PID=""
@@ -68,15 +70,16 @@ CLEANUP_DONE=0
 usage() {
   cat <<'EOF'
 Usage:
-  run.sh baseline TEST_ID
+  run.sh baseline TEST_ID [--nokov-shadow]
   run.sh shadow TEST_ID
-  run.sh --check-only baseline
+  run.sh --check-only baseline [--nokov-shadow]
   run.sh --check-only shadow
   run.sh --help
 
 Modes:
   baseline  PX4 control source is Super-LIO /lio/robo/odom. Dynamic filtering
-            is disabled by livox_360.yaml.
+            is disabled by livox_360.yaml. Add --nokov-shadow to validate and
+            record NOKOV /Robot_3/pose as a shadow-only reference.
 
   shadow    PX4 control source is NOKOV /Robot_3/pose. Super-LIO runs the full
             dynamic pose/map pipeline with livox_360_dynamic_shadow_nokov.yaml,
@@ -85,6 +88,8 @@ Modes:
 Examples:
   ./deployment/run.sh --check-only baseline
   ./deployment/run.sh baseline superlio_baseline_hover_01
+  ./deployment/run.sh --check-only baseline --nokov-shadow
+  ./deployment/run.sh baseline superlio_nokov_shadow_hover_01 --nokov-shadow
   ./deployment/run.sh --check-only shadow
   ./deployment/run.sh shadow dynamic_nokov_shadow_hover_01
 
@@ -92,7 +97,9 @@ The runner owns the complete data-test lifecycle:
   preflight -> PX4 odometry bridge -> Super-LIO -> topology isolation checks
   -> MCAP/system/PTP recording -> one Ctrl+C -> clean flush and report.
 
-Before shadow mode, start exactly one NOKOV publisher for /Robot_3/pose.
+Before shadow mode or baseline --nokov-shadow, start exactly one NOKOV
+publisher for /Robot_3/pose. The --nokov-shadow option is valid only with
+baseline; it never routes NOKOV data into PX4.
 Do not separately start generic_odometry.launch.py, Livox_mid360.launch.py,
 real_super_lio_*.launch.py, ros2 bag record, a planner, or Offboard control.
 
@@ -309,6 +316,10 @@ if (
 PY
 }
 
+nokov_is_required() {
+  [[ "$NOKOV_ROLE" != "disabled" ]]
+}
+
 configure_mode() {
   case "$RUN_MODE" in
     baseline)
@@ -316,12 +327,16 @@ configure_mode() {
       BRIDGE_CONFIG_NAME="super_lio_config.yaml"
       EXPECTED_CONTROL_TOPIC="$LIO_ODOM_TOPIC"
       EXPECTED_DYNAMIC_ENABLE="false"
+      if [[ "$NOKOV_SHADOW_ENABLED" == "true" ]]; then
+        NOKOV_ROLE="shadow"
+      fi
       ;;
     shadow)
       SUPER_LIO_CONFIG_NAME="livox_360_dynamic_shadow_nokov.yaml"
       BRIDGE_CONFIG_NAME="nokov_mocap_config.yaml"
       EXPECTED_CONTROL_TOPIC="$NOKOV_TOPIC"
       EXPECTED_DYNAMIC_ENABLE="true"
+      NOKOV_ROLE="control"
       ;;
     *)
       die "Mode must be baseline or shadow"
@@ -386,15 +401,19 @@ base_preflight() {
     scratch_dir="$(mktemp -d)"
   fi
 
-  if [[ "$RUN_MODE" == "shadow" ]]; then
+  if nokov_is_required; then
     topic_must_exist "$NOKOV_TOPIC" "$topic_snapshot"
     source_type="$(timeout 12 ros2 topic type "$NOKOV_TOPIC" 2>/dev/null || true)"
     [[ "$source_type" == "geometry_msgs/msg/PoseStamped" ]] || \
       die "${NOKOV_TOPIC} type is ${source_type:-unknown}, expected PoseStamped"
     source_count="$(publisher_count \
-      "$NOKOV_TOPIC" "${scratch_dir}/preflight_control_publishers.txt")"
+      "$NOKOV_TOPIC" "${scratch_dir}/preflight_nokov_publishers.txt")"
     [[ "$source_count" -eq 1 ]] || \
       die "Expected one NOKOV publisher, found ${source_count:-unknown}"
+    if [[ -n "$output_dir" && "$NOKOV_ROLE" == "control" ]]; then
+      cp -a "${scratch_dir}/preflight_nokov_publishers.txt" \
+        "${scratch_dir}/preflight_control_publishers.txt"
+    fi
   fi
 
   visual_count="$(publisher_count \
@@ -422,12 +441,12 @@ base_preflight() {
   }
   log "PX4 status: ${px4_status_metrics}"
 
-  if [[ "$RUN_MODE" == "shadow" ]]; then
+  if nokov_is_required; then
     source_metrics="$(check_nokov_stream)" || {
       printf '%s\n' "$source_metrics" >&2
       die "NOKOV rate/timestamp/pose gate failed"
     }
-    log "NOKOV: ${source_metrics}"
+    log "NOKOV (${NOKOV_ROLE}): ${source_metrics}"
   fi
 
   if [[ -n "$output_dir" ]]; then
@@ -436,7 +455,10 @@ base_preflight() {
     printf '%s\n' "$lidar_metrics" >"${output_dir}/preflight_lidar_metrics.txt"
     printf '%s\n' "$px4_status_metrics" >"${output_dir}/preflight_px4_status_metrics.txt"
     if [[ -n "$source_metrics" ]]; then
-      printf '%s\n' "$source_metrics" >"${output_dir}/preflight_control_metrics.txt"
+      printf '%s\n' "$source_metrics" >"${output_dir}/preflight_nokov_metrics.txt"
+      if [[ "$NOKOV_ROLE" == "control" ]]; then
+        printf '%s\n' "$source_metrics" >"${output_dir}/preflight_control_metrics.txt"
+      fi
     fi
   else
     rm -rf -- "${scratch_dir:?}"
@@ -531,6 +553,8 @@ ROS_DOMAIN_ID=${ROS_DOMAIN_ID}
 CONTROL_ODOMETRY=${EXPECTED_CONTROL_TOPIC}
 SUPER_LIO_CONFIG=${SUPER_LIO_CONFIG_NAME}
 SUPER_LIO_DYNAMIC_ENABLE=${EXPECTED_DYNAMIC_ENABLE}
+NOKOV_ROLE=${NOKOV_ROLE}
+NOKOV_SHADOW_ENABLED=${NOKOV_SHADOW_ENABLED}
 SUPER_LIO_OVERLAY=${SUPER_LIO_OVERLAY}
 SUPER_LIO_COMMIT=$(git -C "${SUPER_LIO_OVERLAY}/src/Super-LIO" rev-parse HEAD)
 FLIGHT_MODE=POSCTL
@@ -555,6 +579,10 @@ wait_for_stack() {
     /lio/diagnostics/scan
     "$VISUAL_ODOM_TOPIC"
   )
+
+  if nokov_is_required; then
+    required_topics+=("$NOKOV_TOPIC")
+  fi
 
   if [[ "$RUN_MODE" == "shadow" ]]; then
     required_topics+=(/lio/dynamic_ratio)
@@ -602,6 +630,7 @@ validate_topology() {
   local offboard_count
   local super_lio_count
   local bridge_count
+  local nokov_count
   local lio_metrics
 
   timeout 15 ros2 node list | sort >"${TEST_DIR}/nodes.txt"
@@ -620,6 +649,26 @@ validate_topology() {
   grep -Fq 'Node name: generic_odometry_node' \
     "${TEST_DIR}/visual_odom_publishers.txt" || \
     die "PX4 visual odometry publisher is not generic_odometry_node"
+
+  if nokov_is_required; then
+    nokov_count="$(publisher_count \
+      "$NOKOV_TOPIC" "${TEST_DIR}/nokov_publishers.txt")"
+    [[ "$nokov_count" -eq 1 ]] || \
+      die "Expected one NOKOV publisher, found ${nokov_count:-unknown}"
+
+    timeout 12 ros2 topic info -v "$NOKOV_TOPIC" \
+      >"${TEST_DIR}/nokov_endpoints.txt" 2>&1 || \
+      die "Unable to inspect ${NOKOV_TOPIC} endpoints"
+
+    if [[ "$NOKOV_ROLE" == "control" ]]; then
+      grep -Fq 'Node name: generic_odometry_node' \
+        "${TEST_DIR}/nokov_endpoints.txt" || \
+        die "generic_odometry_node is not consuming ${NOKOV_TOPIC}"
+    elif grep -Fq 'Node name: generic_odometry_node' \
+        "${TEST_DIR}/nokov_endpoints.txt"; then
+      die "generic_odometry_node consumes ${NOKOV_TOPIC}; NOKOV shadow isolation failed"
+    fi
+  fi
 
   timeout 12 ros2 topic info -v "$LIO_ODOM_TOPIC" \
     >"${TEST_DIR}/lio_robo_odom_endpoints.txt" 2>&1 || \
@@ -671,11 +720,17 @@ validate_topology() {
     >"${TEST_DIR}/odom_converter_runtime_params.yaml" 2>&1 || \
     warn "Unable to dump /generic_odometry_node parameters"
 
-  if [[ "$RUN_MODE" == "shadow" ]]; then
-    log "Topology verified: NOKOV is the sole PX4 odometry source; Super-LIO is shadow-only"
-  else
-    log "Topology verified: Super-LIO is the sole PX4 odometry source"
-  fi
+  case "$NOKOV_ROLE" in
+    control)
+      log "Topology verified: NOKOV is the sole PX4 odometry source; Super-LIO is shadow-only"
+      ;;
+    shadow)
+      log "Topology verified: Super-LIO is the sole PX4 odometry source; NOKOV is shadow-only"
+      ;;
+    disabled)
+      log "Topology verified: Super-LIO is the sole PX4 odometry source"
+      ;;
+  esac
 }
 
 start_monitors() {
@@ -717,7 +772,6 @@ start_monitors() {
 }
 
 start_rosbag() {
-  local topic_snapshot
   local topics=(
     /livox/imu
     /livox/lidar
@@ -750,8 +804,7 @@ start_rosbag() {
     /parameter_events
   )
 
-  topic_snapshot="$(safe_ros_topic_list || true)"
-  if grep -Fxq "$NOKOV_TOPIC" <<<"$topic_snapshot"; then
+  if nokov_is_required; then
     topics+=("$NOKOV_TOPIC")
   fi
   if [[ "$RUN_MODE" == "shadow" ]]; then
@@ -926,22 +979,30 @@ case "${1:-}" in
     exit 0
     ;;
   --check-only)
-    (( $# == 2 )) || {
+    (( $# == 2 || $# == 3 )) || {
       usage >&2
-      die "--check-only requires exactly one mode: baseline or shadow"
+      die "--check-only requires one mode and optionally --nokov-shadow"
     }
     ACTION="check"
     RUN_MODE="$2"
-    shift 2
+    if (( $# == 3 )); then
+      [[ "$3" == "--nokov-shadow" ]] || die "Unknown option: $3"
+      NOKOV_SHADOW_ENABLED="true"
+    fi
+    shift "$#"
     ;;
   baseline|shadow)
-    (( $# == 2 )) || {
+    (( $# == 2 || $# == 3 )) || {
       usage >&2
-      die "$1 requires exactly one TEST_ID"
+      die "$1 requires one TEST_ID and optionally --nokov-shadow"
     }
     RUN_MODE="$1"
     TEST_ID="$2"
-    shift 2
+    if (( $# == 3 )); then
+      [[ "$3" == "--nokov-shadow" ]] || die "Unknown option: $3"
+      NOKOV_SHADOW_ENABLED="true"
+    fi
+    shift "$#"
     ;;
   "")
     usage >&2
@@ -954,6 +1015,9 @@ case "${1:-}" in
 esac
 
 (( $# == 0 )) || die "Unexpected arguments: $*"
+if [[ "$NOKOV_SHADOW_ENABLED" == "true" && "$RUN_MODE" != "baseline" ]]; then
+  die "--nokov-shadow is valid only with baseline mode"
+fi
 configure_mode
 
 if [[ "$ACTION" == "run" ]]; then
@@ -1028,6 +1092,8 @@ log "Recording is active: ${TEST_DIR}"
 log "PX4 control source: ${EXPECTED_CONTROL_TOPIC}"
 if [[ "$RUN_MODE" == "shadow" ]]; then
   log "Super-LIO dynamic output is shadow-only and recorded under /lio/*"
+elif [[ "$NOKOV_SHADOW_ENABLED" == "true" ]]; then
+  log "NOKOV output is shadow-only and recorded under ${NOKOV_TOPIC}"
 fi
 log "Use POSCTL only. This runner does not arm or start Offboard."
 log "After disarm, wait 15 seconds and press Ctrl+C once."
