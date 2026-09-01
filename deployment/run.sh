@@ -9,11 +9,26 @@ REPO_ROOT="$(readlink -f "${SCRIPT_DIR}/..")"
 readonly REPO_ROOT
 DETECTED_OVERLAY="$(readlink -f "${REPO_ROOT}/../..")"
 readonly DETECTED_OVERLAY
+readonly PREFLIGHT_CHECKER="${SCRIPT_DIR}/preflight_checks.py"
+[[ -r "$PREFLIGHT_CHECKER" ]] || {
+  printf 'ERROR: Preflight checker is missing: %s\n' "$PREFLIGHT_CHECKER" >&2
+  exit 1
+}
+command -v python3 >/dev/null 2>&1 || {
+  printf 'ERROR: Required command not found: python3\n' >&2
+  exit 1
+}
 
 # Override these paths when the runner is deployed to a differently named
-# overlay. The defaults match the current source tree layout and CAT201 base
-# flight workspace.
-readonly FLIGHT_WORKSPACE="${FLIGHT_WORKSPACE:-/home/cat/ws_super_spline}"
+# overlay. A complete overlay such as merge_test owns both packages; a
+# Super-LIO-only overlay such as phase5 falls back to the CAT201 flight base.
+FLIGHT_WORKSPACE="$(
+  python3 "$PREFLIGHT_CHECKER" select-workspace \
+    --detected "$DETECTED_OVERLAY" \
+    --fallback /home/cat/ws_super_spline \
+    --override "${FLIGHT_WORKSPACE:-}"
+)"
+readonly FLIGHT_WORKSPACE
 readonly SUPER_LIO_OVERLAY="${SUPER_LIO_OVERLAY:-${DETECTED_OVERLAY}}"
 readonly DATA_ROOT="${DATA_ROOT:-${SUPER_LIO_OVERLAY}/test_data}"
 readonly NOKOV_TOPIC="/Robot_3/pose"
@@ -191,128 +206,19 @@ check_ptp_exchange() {
 }
 
 check_imu_timestamp_latency() {
-  python3 - <<'PY'
-import statistics
-import sys
-import time
-
-import rclpy
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Imu
-
-rclpy.init()
-node = rclpy.create_node("flight_runner_imu_timestamp_gate")
-latencies_ms = []
-
-def callback(msg):
-    stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
-    latencies_ms.append((node.get_clock().now().nanoseconds - stamp_ns) / 1_000_000)
-
-subscription = node.create_subscription(
-    Imu, "/livox/imu", callback, qos_profile_sensor_data)
-deadline = time.monotonic() + 5.0
-
-while len(latencies_ms) < 100 and time.monotonic() < deadline:
-    rclpy.spin_once(node, timeout_sec=0.1)
-
-node.destroy_node()
-rclpy.shutdown()
-
-if len(latencies_ms) < 20:
-    print(f"samples={len(latencies_ms)} result=FAIL reason=no_live_imu")
-    sys.exit(2)
-
-ordered = sorted(latencies_ms)
-p95 = ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))]
-median = statistics.median(ordered)
-maximum = max(ordered)
-print(
-    f"samples={len(ordered)} median_ms={median:.3f} "
-    f"p95_ms={p95:.3f} max_ms={maximum:.3f}")
-
-if median > 5.0 or p95 > 10.0 or maximum > 20.0:
-    sys.exit(3)
-PY
+  python3 "$PREFLIGHT_CHECKER" live imu
 }
 
 check_nokov_stream() {
-  python3 - <<'PY'
-import math
-import statistics
-import sys
-import time
+  python3 "$PREFLIGHT_CHECKER" live nokov
+}
 
-import rclpy
-from geometry_msgs.msg import PoseStamped
-from rclpy.qos import qos_profile_sensor_data
+check_lidar_stream() {
+  python3 "$PREFLIGHT_CHECKER" live lidar
+}
 
-rclpy.init()
-node = rclpy.create_node("flight_runner_nokov_timestamp_gate")
-arrivals = []
-latencies_ms = []
-stamps_ns = []
-invalid_pose_count = 0
-
-def callback(msg):
-    global invalid_pose_count
-    now_ns = node.get_clock().now().nanoseconds
-    stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
-    arrivals.append(time.monotonic())
-    stamps_ns.append(stamp_ns)
-    latencies_ms.append((now_ns - stamp_ns) / 1_000_000)
-    values = (
-        msg.pose.position.x, msg.pose.position.y, msg.pose.position.z,
-        msg.pose.orientation.x, msg.pose.orientation.y,
-        msg.pose.orientation.z, msg.pose.orientation.w,
-    )
-    q_norm = math.sqrt(sum(value * value for value in values[3:]))
-    if not all(math.isfinite(value) for value in values) or not 0.5 < q_norm < 1.5:
-        invalid_pose_count += 1
-
-subscription = node.create_subscription(
-    PoseStamped, "/Robot_3/pose", callback, qos_profile_sensor_data)
-deadline = time.monotonic() + 6.0
-
-while len(arrivals) < 120 and time.monotonic() < deadline:
-    rclpy.spin_once(node, timeout_sec=0.1)
-
-node.destroy_node()
-rclpy.shutdown()
-
-if len(arrivals) < 20:
-    print(f"samples={len(arrivals)} result=FAIL reason=no_live_nokov")
-    sys.exit(2)
-
-duration = arrivals[-1] - arrivals[0]
-rate_hz = (len(arrivals) - 1) / duration if duration > 0 else 0.0
-regressions = sum(curr < prev for prev, curr in zip(stamps_ns, stamps_ns[1:]))
-duplicates = sum(curr == prev for prev, curr in zip(stamps_ns, stamps_ns[1:]))
-zero_stamps = sum(stamp == 0 for stamp in stamps_ns)
-median_ms = statistics.median(latencies_ms)
-absolute_latencies = sorted(abs(value) for value in latencies_ms)
-p95_abs_ms = absolute_latencies[
-    min(len(absolute_latencies) - 1, int(0.95 * len(absolute_latencies)))]
-max_abs_ms = max(absolute_latencies)
-print(
-    f"samples={len(arrivals)} rate_hz={rate_hz:.2f} "
-    f"median_latency_ms={median_ms:.3f} p95_abs_latency_ms={p95_abs_ms:.3f} "
-    f"max_abs_latency_ms={max_abs_ms:.3f} regressions={regressions} "
-    f"duplicates={duplicates} zero_stamps={zero_stamps} "
-    f"invalid_poses={invalid_pose_count}")
-
-if (
-    rate_hz < 20.0
-    or regressions > 0
-    or duplicates > max(1, len(stamps_ns) // 20)
-    or zero_stamps > 0
-    or invalid_pose_count > 0
-    or median_ms < -20.0
-    or median_ms > 100.0
-    or p95_abs_ms > 150.0
-    or max_abs_ms > 250.0
-):
-    sys.exit(3)
-PY
+check_px4_status_stream() {
+  python3 "$PREFLIGHT_CHECKER" live px4-status
 }
 
 check_lio_odometry_stream() {
@@ -430,6 +336,8 @@ base_preflight() {
   local output_dir="${1:-}"
   local topic_snapshot
   local imu_metrics
+  local lidar_metrics
+  local px4_status_metrics
   local source_metrics=""
   local source_type
   local source_count
@@ -502,6 +410,18 @@ base_preflight() {
   }
   log "Livox IMU: ${imu_metrics}"
 
+  lidar_metrics="$(check_lidar_stream)" || {
+    printf '%s\n' "$lidar_metrics" >&2
+    die "Livox lidar live-stream gate failed"
+  }
+  log "Livox lidar: ${lidar_metrics}"
+
+  px4_status_metrics="$(check_px4_status_stream)" || {
+    printf '%s\n' "$px4_status_metrics" >&2
+    die "PX4 vehicle status live-stream gate failed"
+  }
+  log "PX4 status: ${px4_status_metrics}"
+
   if [[ "$RUN_MODE" == "shadow" ]]; then
     source_metrics="$(check_nokov_stream)" || {
       printf '%s\n' "$source_metrics" >&2
@@ -513,6 +433,8 @@ base_preflight() {
   if [[ -n "$output_dir" ]]; then
     printf '%s\n' "$topic_snapshot" | sort >"${output_dir}/preflight_topics.txt"
     printf '%s\n' "$imu_metrics" >"${output_dir}/preflight_imu_metrics.txt"
+    printf '%s\n' "$lidar_metrics" >"${output_dir}/preflight_lidar_metrics.txt"
+    printf '%s\n' "$px4_status_metrics" >"${output_dir}/preflight_px4_status_metrics.txt"
     if [[ -n "$source_metrics" ]]; then
       printf '%s\n' "$source_metrics" >"${output_dir}/preflight_control_metrics.txt"
     fi
@@ -520,7 +442,7 @@ base_preflight() {
     rm -rf -- "${scratch_dir:?}"
   fi
 
-  if [[ "$(timedatectl show -p SystemClockSynchronized --value 2>/dev/null || true)" != "yes" ]]; then
+  if ! python3 "$PREFLIGHT_CHECKER" clock-synchronized >/dev/null; then
     warn "System NTP is not synchronized; relative sensor timestamp gates passed"
   fi
 
@@ -531,7 +453,10 @@ copy_if_readable() {
   local source_path="$1"
   local destination_dir="$2"
   if [[ -r "$source_path" ]]; then
-    cp -a "$source_path" "$destination_dir/"
+    python3 "$PREFLIGHT_CHECKER" snapshot-file \
+      --source "$source_path" \
+      --destination "$destination_dir" \
+      >/dev/null
   fi
 }
 
@@ -554,6 +479,7 @@ save_configuration_snapshot() {
     "${SUPER_LIO_OVERLAY}/src/Super-LIO/src/super_lio/launch/Livox_mid360.launch.py" \
     "${TEST_DIR}/config"
   cp -a "$runner_path" "${TEST_DIR}/config/"
+  cp -a "$PREFLIGHT_CHECKER" "${TEST_DIR}/config/"
 
   {
     date -Ins
@@ -593,7 +519,8 @@ save_configuration_snapshot() {
       "$SUPER_LIO_CONFIG" \
       "$(readlink -f "${FLIGHT_WORKSPACE}/install/ros2_px4_odometry/lib/ros2_px4_odometry/odom_to_px4_node")" \
       "$BRIDGE_CONFIG" \
-      "$runner_path"
+      "$runner_path" \
+      "$PREFLIGHT_CHECKER"
   } >"${TEST_DIR}/source_state.txt"
 
   cat >"${TEST_DIR}/test_notes.txt" <<EOF
