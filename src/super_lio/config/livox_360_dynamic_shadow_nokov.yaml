@@ -13,7 +13,7 @@
     lio.ros.imu_topic: "/livox/imu"
 
     lio.sensor.lidar_type: 1
-    lio.sensor.blind: 2.0
+    lio.sensor.blind: 0.45
     lio.sensor.maxrange: 60.0
     lio.sensor.filter_rate: 2
     lio.sensor.enable_downsample: true

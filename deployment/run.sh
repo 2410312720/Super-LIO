@@ -78,8 +78,9 @@ Usage:
 
 Modes:
   baseline  PX4 control source is Super-LIO /lio/robo/odom. Dynamic filtering
-            is enabled by livox_360.yaml. Add --nokov-shadow to validate and
-            record NOKOV /Robot_3/pose as a shadow-only reference.
+            follows lio.dynamic.enable in livox_360.yaml. Add --nokov-shadow
+            to validate and record NOKOV /Robot_3/pose as a shadow-only
+            reference.
 
   shadow    PX4 control source is NOKOV /Robot_3/pose. Super-LIO runs the full
             dynamic pose/map pipeline with livox_360_dynamic_shadow_nokov.yaml,
@@ -320,13 +321,36 @@ nokov_is_required() {
   [[ "$NOKOV_ROLE" != "disabled" ]]
 }
 
+config_boolean_parameter() {
+  local config_path="$1"
+  local parameter_name="$2"
+  local -a values=()
+
+  [[ -r "$config_path" ]] || die "Configuration is not readable: ${config_path}"
+  mapfile -t values < <(
+    awk -v key="${parameter_name}:" \
+      '$1 == key {print tolower($2)}' "$config_path"
+  )
+  [[ "${#values[@]}" -eq 1 ]] || \
+    die "Expected exactly one ${parameter_name} in ${config_path}, found ${#values[@]}"
+  case "${values[0]}" in
+    true|false)
+      printf '%s\n' "${values[0]}"
+      ;;
+    *)
+      die "${parameter_name} is not a boolean in ${config_path}: ${values[0]}"
+      ;;
+  esac
+}
+
 configure_mode() {
+  local configured_dynamic_enable
+
   case "$RUN_MODE" in
     baseline)
       SUPER_LIO_CONFIG_NAME="livox_360.yaml"
       BRIDGE_CONFIG_NAME="super_lio_config.yaml"
       EXPECTED_CONTROL_TOPIC="$LIO_ODOM_TOPIC"
-      EXPECTED_DYNAMIC_ENABLE="true"
       if [[ "$NOKOV_SHADOW_ENABLED" == "true" ]]; then
         NOKOV_ROLE="shadow"
       fi
@@ -335,7 +359,6 @@ configure_mode() {
       SUPER_LIO_CONFIG_NAME="livox_360_dynamic_shadow_nokov.yaml"
       BRIDGE_CONFIG_NAME="nokov_mocap_config.yaml"
       EXPECTED_CONTROL_TOPIC="$NOKOV_TOPIC"
-      EXPECTED_DYNAMIC_ENABLE="true"
       NOKOV_ROLE="control"
       ;;
     *)
@@ -345,6 +368,12 @@ configure_mode() {
 
   SUPER_LIO_CONFIG="${SUPER_LIO_OVERLAY}/install/super_lio/share/super_lio/config/${SUPER_LIO_CONFIG_NAME}"
   BRIDGE_CONFIG="${FLIGHT_WORKSPACE}/install/ros2_px4_odometry/share/ros2_px4_odometry/config/${BRIDGE_CONFIG_NAME}"
+  configured_dynamic_enable="$(config_boolean_parameter \
+    "$SUPER_LIO_CONFIG" lio.dynamic.enable)"
+  if [[ "$RUN_MODE" == "shadow" && "$configured_dynamic_enable" != "true" ]]; then
+    die "shadow mode requires lio.dynamic.enable=true in ${SUPER_LIO_CONFIG}"
+  fi
+  EXPECTED_DYNAMIC_ENABLE="$configured_dynamic_enable"
 }
 
 base_preflight() {
