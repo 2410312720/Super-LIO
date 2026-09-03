@@ -64,8 +64,9 @@ def test_super_lio_component_declares_explicit_parameters():
 
 
 @pytest.mark.parametrize("use_sim_time", [True, False])
-def test_super_lio_component_exposes_requested_time_domain(use_sim_time):
+def test_super_lio_component_exposes_requested_time_domain(use_sim_time, monkeypatch):
     """A component launch must preserve either explicit time-domain choice."""
+    monkeypatch.setenv("ROS_DOMAIN_ID", "41" if use_sim_time else "42")
     process = subprocess.Popen(
         [
             "ros2", "launch", "super_lio", "super_lio_component.launch.py",
@@ -97,9 +98,13 @@ def test_super_lio_component_exposes_requested_time_domain(use_sim_time):
     finally:
         probe.destroy_node()
         rclpy.shutdown()
-        os.killpg(process.pid, signal.SIGTERM)
+        process.terminate()
         try:
             process.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5.0)
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5.0)
