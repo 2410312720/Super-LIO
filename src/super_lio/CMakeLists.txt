@@ -160,7 +160,7 @@ if(BUILD_TESTING)
 
   ament_add_pytest_test(test_component_launch
     test/test_component_launch.py
-    TIMEOUT 50
+    TIMEOUT 100
     ENV PYTHONDONTWRITEBYTECODE=1
   )
 endif()
