@@ -127,6 +127,7 @@ install(DIRECTORY rviz/
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
 
   ament_add_gtest(test_dynamic_filter test/test_dynamic_filter.cpp)
   target_link_libraries(test_dynamic_filter lio)
@@ -156,6 +157,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_forward_state_sync test/test_forward_state_sync.cpp)
   target_include_directories(test_forward_state_sync PRIVATE include)
   target_link_libraries(test_forward_state_sync lio Eigen3::Eigen)
+
+  ament_add_pytest_test(test_component_launch
+    test/test_component_launch.py
+    TIMEOUT 50
+    ENV PYTHONDONTWRITEBYTECODE=1
+  )
 endif()
 
 ament_package()
