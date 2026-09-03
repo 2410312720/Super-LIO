@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import fcntl
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -24,10 +25,13 @@ os.environ.setdefault("ROS_LOG_DIR", "/tmp/aceflight_launch_test_logs")
 
 
 @contextmanager
-def component_ros_domain(_use_sim_time):
+def component_ros_domain(_use_sim_time, lock_directory=Path("/tmp")):
     """Lease a non-default DDS domain until the component test has cleaned up."""
+    lock_directory = Path(lock_directory)
     for domain in range(1, 233):
-        lock_handle = open(f"/tmp/aceflight_component_ros_domain_{domain}.lock", "w")
+        lock_handle = open(
+            lock_directory / f"aceflight_component_ros_domain_{domain}.lock", "w"
+        )
         try:
             fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -144,10 +148,10 @@ def test_component_cleanup_terminates_the_entire_launch_process_group():
             "-c",
             (
                 "import subprocess, sys, time; "
-                "child = subprocess.Popen([sys.executable, '-c', "
-                "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "time.sleep(60)']); "
-                "print(f'READY {child.pid}', flush=True); time.sleep(60)"
+                "subprocess.Popen([sys.executable, '-c', "
+                "'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print(f\\\"READY {os.getpid()}\\\", flush=True); time.sleep(60)']); "
+                "time.sleep(60)"
             ),
         ],
         start_new_session=True,
@@ -157,6 +161,8 @@ def test_component_cleanup_terminates_the_entire_launch_process_group():
     pgid = process.pid
     child_pid = None
     try:
+        readable, _, _ = select.select([process.stdout], [], [], 2.0)
+        assert readable, "SIGTERM-resistant child did not report READY"
         ready = process.stdout.readline().strip()
         assert ready.startswith("READY ")
         child_pid = int(ready.split()[1])
@@ -174,7 +180,7 @@ def test_component_cleanup_terminates_the_entire_launch_process_group():
         process.wait(timeout=1.0)
 
 
-def test_component_domain_is_unique_per_case_and_valid():
+def test_component_domain_is_unique_per_case_and_valid(tmp_path):
     """Independent worker processes lease distinct non-default DDS domains."""
     worker_code = """
 import importlib.util
@@ -182,7 +188,7 @@ import sys
 spec = importlib.util.spec_from_file_location('component_test', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-with module.component_ros_domain(True) as domain:
+with module.component_ros_domain(True, lock_directory=sys.argv[2]) as domain:
     print(domain, flush=True)
     sys.stdin.readline()
 """
@@ -190,7 +196,7 @@ with module.component_ros_domain(True) as domain:
     try:
         for _ in range(2):
             workers.append(subprocess.Popen(
-                [sys.executable, "-c", worker_code, str(Path(__file__))],
+                [sys.executable, "-c", worker_code, str(Path(__file__)), str(tmp_path)],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 text=True,
@@ -201,11 +207,16 @@ with module.component_ros_domain(True) as domain:
     finally:
         for worker in workers:
             if worker.stdin is not None:
-                worker.stdin.write("\n")
-                worker.stdin.flush()
+                try:
+                    worker.stdin.write("\n")
+                    worker.stdin.flush()
+                except BrokenPipeError:
+                    pass
             worker.wait(timeout=1.0)
-    with component_ros_domain(True) as reused_domain:
-        assert reused_domain == 1
+    with component_ros_domain(True, lock_directory=tmp_path) as reused_domain:
+        assert reused_domain in domains
+    with component_ros_domain(True) as runtime_domain:
+        assert 1 <= runtime_domain <= 232
 
 
 @pytest.mark.parametrize("use_sim_time", [True, False])
