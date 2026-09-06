@@ -220,8 +220,8 @@ with module.component_ros_domain(True, lock_directory=sys.argv[2]) as domain:
 
 
 @pytest.mark.parametrize("use_sim_time", [True, False])
-def test_super_lio_component_exposes_requested_time_domain(use_sim_time, monkeypatch):
-    """A component launch must preserve either explicit time-domain choice."""
+def test_super_lio_component_exposes_time_and_frame_contract(use_sim_time, monkeypatch):
+    """The installed component must expose the selected clock and explicit odometry frames."""
     with component_ros_domain(use_sim_time) as domain:
         monkeypatch.setenv("ROS_DOMAIN_ID", str(domain))
         process = None
@@ -249,13 +249,22 @@ def test_super_lio_component_exposes_requested_time_domain(use_sim_time, monkeyp
                 rclpy.spin_once(probe, timeout_sec=0.05)
             assert client.service_is_ready(), "super_lio_node parameter service did not become ready"
             request = GetParameters.Request()
-            request.names = ["use_sim_time"]
+            request.names = [
+                "use_sim_time",
+                "lio.output.world_frame_id",
+                "lio.output.imu_frame_id",
+                "lio.output.robot_frame_id",
+            ]
             future = client.call_async(request)
             while time.monotonic() < deadline and not future.done():
                 clock.publish(Clock())
                 rclpy.spin_once(probe, timeout_sec=0.05)
             assert future.done(), "use_sim_time parameter request timed out"
-            assert future.result().values[0].bool_value is use_sim_time
+            values = future.result().values
+            assert values[0].bool_value is use_sim_time
+            assert [value.string_value for value in values[1:]] == [
+                "world", "imu", "base_link"
+            ]
         finally:
             if probe is not None:
                 probe.destroy_node()

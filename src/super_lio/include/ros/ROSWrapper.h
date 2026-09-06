@@ -9,6 +9,7 @@
 #include <execution>
 #include <functional>
 #include <chrono>
+#include <string>
 
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
@@ -147,6 +148,10 @@ private:
   std::deque<PendingForwardOdometry> pending_forward_odometry_;
   std::chrono::steady_clock::time_point last_imu_arrival_;
   rclcpp::TimerBase::SharedPtr forward_output_timer_;
+
+  std::string world_frame_id_;
+  std::string imu_frame_id_;
+  std::string robot_frame_id_;
 
   nav_msgs::msg::Path path_;
   geometry_msgs::msg::PoseStamped msg2uav_;

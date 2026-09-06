@@ -17,6 +17,19 @@ constexpr int kEskfRotStart = 0;
 constexpr int kEskfPosStart = 3;
 constexpr int kEskfVelStart = 6;
 
+std::string frameParameter(
+    rclcpp::Node& node, const char* name, const char* default_value)
+{
+  const std::string value =
+      node.declare_parameter<std::string>(name, default_value);
+  if (value.empty() || value.front() == '/' ||
+      value.find_first_of(" \t\r\n") != std::string::npos) {
+    throw std::invalid_argument(
+        std::string(name) + " must be a nonempty relative frame ID");
+  }
+  return value;
+}
+
 inline int odomPoseIndexToEskfIndex(const int odom_index)
 {
   return odom_index < 3 ? kEskfPosStart + odom_index
@@ -525,11 +538,17 @@ ROSWrapper::ROSWrapper(const rclcpp::NodeOptions& options)
 : rclcpp::Node("super_lio", options)
 {
   LoadParamFromRos(*this);
+  world_frame_id_ = frameParameter(
+      *this, "lio.output.world_frame_id", "world");
+  imu_frame_id_ = frameParameter(
+      *this, "lio.output.imu_frame_id", "imu");
+  robot_frame_id_ = frameParameter(
+      *this, "lio.output.robot_frame_id", "base_link");
   LOG(INFO) << GREEN << " ---> Using Lidar type: "
             << lidarTypeToString(g_lidar_type) << RESET;
 
-  msg2uav_.header.frame_id = "world";
-  path_.header.frame_id = "world";
+  msg2uav_.header.frame_id = world_frame_id_;
+  path_.header.frame_id = world_frame_id_;
 
   setupIO();
 }
@@ -634,7 +653,7 @@ void ROSWrapper::pub_scan_diagnostics(const ScanDiagnosticsData& diagnostics)
 
   super_lio::msg::ScanDiagnostics message;
   message.header.stamp = toRosTime(diagnostics.scan_end_time);
-  message.header.frame_id = "world";
+  message.header.frame_id = world_frame_id_;
   message.scan_sequence = diagnostics.scan_sequence;
   message.scan_start_time = diagnostics.scan_start_time;
   message.scan_end_time = diagnostics.scan_end_time;
@@ -753,8 +772,10 @@ void ROSWrapper::enqueueForwardOdometry(
   pending.timestamp = imu_state.time;
   pending.imu.header.stamp = source.header.stamp;
   pending.robot.header.stamp = source.header.stamp;
-  pending.imu.header.frame_id = "world";
-  pending.robot.header.frame_id = "world";
+  pending.imu.header.frame_id = world_frame_id_;
+  pending.imu.child_frame_id = imu_frame_id_;
+  pending.robot.header.frame_id = world_frame_id_;
+  pending.robot.child_frame_id = robot_frame_id_;
   fillForwardOdometry(
       pending.imu, pending.robot, imu_state, robot_state, eskf_->GetCov());
   pending_forward_odometry_.push_back(std::move(pending));
@@ -1047,7 +1068,8 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
 
 void ROSWrapper::pub_odom(const NavState& state){
   nav_msgs::msg::Odometry odom;
-  odom.header.frame_id = "world";
+  odom.header.frame_id = world_frame_id_;
+  odom.child_frame_id = imu_frame_id_;
 
   odom.header.stamp = toRosTime(state.timestamp);
   odom.pose.pose.position.x = state.p[0];
@@ -1101,8 +1123,8 @@ void ROSWrapper::pub_odom(const NavState& state){
   geometry_msgs::msg::TransformStamped tf_msg;
 
   tf_msg.header.stamp = odom.header.stamp;
-  tf_msg.header.frame_id = "world";
-  tf_msg.child_frame_id = "imu";
+  tf_msg.header.frame_id = world_frame_id_;
+  tf_msg.child_frame_id = imu_frame_id_;
 
   tf_msg.transform.translation.x = state.p[0];
   tf_msg.transform.translation.y = state.p[1];
@@ -1128,7 +1150,7 @@ void ROSWrapper::pub_odom(const NavState& state){
 void ROSWrapper::pub_cloud_world(const CloudPtr& pc, double time){
   sensor_msgs::msg::PointCloud2 cloud;
   pcl::toROSMsg(*pc, cloud);
-  cloud.header.frame_id = "world";
+  cloud.header.frame_id = world_frame_id_;
   cloud.header.stamp = toRosTime(time);
   pub_cloud_world_->publish(cloud);
 }
@@ -1144,12 +1166,12 @@ void ROSWrapper::pub_dynamic_debug_clouds(
   }
 
   const auto stamp = toRosTime(time);
-  auto publish_cloud = [&stamp](
+  auto publish_cloud = [&stamp, this](
       const CloudPtr& point_cloud,
       const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher) {
     sensor_msgs::msg::PointCloud2 message;
     pcl::toROSMsg(*point_cloud, message);
-    message.header.frame_id = "world";
+    message.header.frame_id = world_frame_id_;
     message.header.stamp = stamp;
     publisher->publish(message);
   };
@@ -1174,7 +1196,7 @@ void ROSWrapper::pub_cloud2planner(const CloudPtr& pc, double time){
         "/lio/robo/cloud_world", 10);
   sensor_msgs::msg::PointCloud2 cloud;
   pcl::toROSMsg(*pc, cloud);
-  cloud.header.frame_id = "world";
+  cloud.header.frame_id = world_frame_id_;
   cloud.header.stamp = toRosTime(time);
   pub_cloud2robot_->publish(cloud);
 }
@@ -1240,7 +1262,7 @@ void ROSWrapper::pub_processing_time(double time,
 
 void ROSWrapper::set_global_map(const BASIC::CloudPtr& global_map){
   pcl::toROSMsg(*global_map, global_map_msg_);
-  global_map_msg_.header.frame_id = "world";
+  global_map_msg_.header.frame_id = world_frame_id_;
 
   static auto global_map_pub =
     this->create_publisher<sensor_msgs::msg::PointCloud2>(

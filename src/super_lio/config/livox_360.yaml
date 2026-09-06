@@ -42,6 +42,10 @@
     lio.observation.robust_scale_m: 0.03
 
     lio.output.robot: true
+    # /lio/robo/odom is world -> PX4 vehicle body origin in ROS FLU axes.
+    lio.output.world_frame_id: "world"
+    lio.output.imu_frame_id: "imu"
+    lio.output.robot_frame_id: "base_link"
     lio.output.plan_env_world: false
     lio.output.plan_env_body: false
     lio.output.ml_map: false

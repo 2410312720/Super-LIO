@@ -46,6 +46,9 @@
     # Keep /lio/robo/odom for comparison, but do not create the legacy MAVROS
     # vision-pose output. The PX4 bridge must be configured for NOKOV.
     lio.output.robot: false
+    lio.output.world_frame_id: "world"
+    lio.output.imu_frame_id: "imu"
+    lio.output.robot_frame_id: "base_link"
     lio.output.plan_env_world: false
     lio.output.plan_env_body: false
     lio.output.ml_map: false

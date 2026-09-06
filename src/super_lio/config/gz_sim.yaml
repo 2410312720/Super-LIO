@@ -44,6 +44,9 @@
     lio.kf.kf_quit_eps: 0.001
 
     lio.output.robot: true
+    lio.output.world_frame_id: "world"
+    lio.output.imu_frame_id: "imu"
+    lio.output.robot_frame_id: "base_link"
     lio.output.plan_env_world: false
     lio.output.plan_env_body: false
     lio.output.ml_map: false
