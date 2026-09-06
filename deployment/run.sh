@@ -9,6 +9,40 @@ REPO_ROOT="$(readlink -f "${SCRIPT_DIR}/..")"
 readonly REPO_ROOT
 DETECTED_OVERLAY="$(readlink -f "${REPO_ROOT}/../..")"
 readonly DETECTED_OVERLAY
+
+# This diagnostic path must remain ahead of every legacy preflight, service,
+# privilege and process-lifecycle action below. It only sources the reviewed
+# ROS environment and replaces this shell with the subscription-only reporter.
+if [[ "${1:-}" == "readiness-report" ]]; then
+  shift
+  report_workspace="${FLIGHT_WORKSPACE:-${DETECTED_OVERLAY}}"
+  [[ -r /opt/ros/humble/setup.bash ]] || {
+    printf 'ERROR: ROS Humble setup is missing\n' >&2
+    exit 1
+  }
+  [[ -r "${report_workspace}/install/setup.bash" ]] || {
+    printf 'ERROR: Flight workspace setup is missing: %s\n' \
+      "${report_workspace}/install/setup.bash" >&2
+    exit 1
+  }
+  if [[ -r /etc/ros/ros_env ]]; then
+    # shellcheck source=/dev/null
+    source /etc/ros/ros_env
+  fi
+  export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-66}"
+  set +u
+  # shellcheck disable=SC1091
+  source /opt/ros/humble/setup.bash
+  # shellcheck disable=SC1091
+  source "${report_workspace}/install/setup.bash"
+  set -u
+  command -v ros2 >/dev/null 2>&1 || {
+    printf 'ERROR: Required command not found: ros2\n' >&2
+    exit 1
+  }
+  exec ros2 run aceflight_flight_bringup readiness-report "$@"
+fi
+
 readonly PREFLIGHT_CHECKER="${SCRIPT_DIR}/preflight_checks.py"
 [[ -r "$PREFLIGHT_CHECKER" ]] || {
   printf 'ERROR: Preflight checker is missing: %s\n' "$PREFLIGHT_CHECKER" >&2
@@ -74,6 +108,7 @@ Usage:
   run.sh shadow TEST_ID
   run.sh --check-only baseline [--nokov-shadow]
   run.sh --check-only shadow
+  run.sh readiness-report [READINESS_REPORT_OPTIONS...]
   run.sh --help
 
 Modes:
@@ -92,6 +127,7 @@ Examples:
   ./deployment/run.sh --check-only baseline --nokov-shadow
   ./deployment/run.sh baseline superlio_nokov_shadow_hover_01 --nokov-shadow
   ./deployment/run.sh --check-only shadow
+  ./deployment/run.sh readiness-report --timeout 10
   ./deployment/run.sh shadow dynamic_nokov_shadow_hover_01
 
 The runner owns the complete data-test lifecycle:
@@ -105,6 +141,8 @@ Do not separately start generic_odometry.launch.py, Livox_mid360.launch.py,
 real_super_lio_*.launch.py, ros2 bag record, a planner, or Offboard control.
 
 This script never arms the aircraft and never starts a planner or Offboard.
+The readiness-report action bypasses all service/preflight/sudo paths and only
+forwards to the subscription-only aceflight_flight_bringup reporter.
 EOF
 }
 
