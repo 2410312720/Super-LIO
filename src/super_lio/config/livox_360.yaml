@@ -15,7 +15,7 @@
     lio.sensor.maxrange: 60.0
     lio.sensor.filter_rate: 3
     lio.sensor.enable_downsample: true
-    lio.sensor.voxel_fliter_size: 0.5
+    lio.sensor.voxel_fliter_size: 0.5                                # 当前帧点云体素降采样，越大点越少
     lio.sensor.gravity_norm: 9.7946
     lio.sensor.imu_type: 1
     lio.sensor.imu_na: 0.1
@@ -43,7 +43,8 @@
     lio.output.ml_map: false
     lio.output.planner: false
     lio.output.map: true
-    lio.output.dense: true
-    lio.output.pub_step: 1
+    lio.output.dense: true                                           # true：发布点云不降采样，false：发布点云体素降采样
+    lio.output.pub_step: 1                                           # 发布频率控制，发布频率 = 传感器频率 / pub_step，越大发布频率越低
+    lio.output.pub_point_step: 1                                     # 发布点抽样步长，1=全发，2=每隔1个点取1个，越大发布点越少
 
     lio.eva.timer: true

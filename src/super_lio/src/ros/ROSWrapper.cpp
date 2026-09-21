@@ -174,6 +174,9 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<int>("lio.output.pub_step", 0);
   node.get_parameter("lio.output.pub_step", g_pub_step);
 
+  node.declare_parameter<int>("lio.output.pub_point_step", 1);
+  node.get_parameter("lio.output.pub_point_step", g_pub_point_step);
+
   // ================= relocation =================
   node.declare_parameter<bool>("lio.relocation.update_map", false);
   node.get_parameter("lio.relocation.update_map", g_update_map);
@@ -521,6 +524,39 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
     lidar_data.end_time = lidar_data.start_time + offset_time;
     break;
   }
+  case LID_TYPE::LIVOX_SIM:
+  {
+    pcl::PointCloud<LivoxSIM::Point> pl_orig;
+    pcl::fromROSMsg(*msg, pl_orig);
+    if (pl_orig.empty()) return;
+
+    lidar_data.pc->reserve(pl_orig.size() / g_filter_rate + 1);
+    lidar_data.start_time = stampToSec(msg->header.stamp);
+
+    double scan_duration = 0.1;
+    if (last_lidar_start_time_ > 0.0 &&
+        lidar_data.start_time > last_lidar_start_time_) {
+      scan_duration = lidar_data.start_time - last_lidar_start_time_;
+    }
+    scan_duration = std::clamp(scan_duration, 0.001, 0.2);
+
+    for(std::size_t i = 0; i < pl_orig.size(); i += g_filter_rate){
+      auto& pt = pl_orig.points[i];
+      if (!validPoint(pt.x, pt.y, pt.z)) continue;
+      offset_time = (pl_orig.size() > 1)
+                    ? scan_duration * static_cast<double>(i) /
+                          static_cast<double>(pl_orig.size() - 1)
+                    : 0.0;
+      lidar_data.pc->emplace_back(
+          pt.x, pt.y, pt.z, pt.intensity, offset_time);
+    }
+
+    if (lidar_data.pc->empty()) return;
+    lidar_data.end_time = lidar_data.start_time +
+                          lidar_data.pc->points.back().offset_time;
+    last_lidar_start_time_ = lidar_data.start_time;
+    break;
+  }
   default:
     return;
   }
@@ -566,6 +602,16 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
 
 
 void ROSWrapper::pub_odom(const NavState& state){
+  if (state.timestamp < 0.0) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(),
+      *this->get_clock(),
+      2000,
+      "Skip publishing /lio/odom because state.timestamp is negative: %.6f",
+      state.timestamp);
+    return;
+  }
+
   nav_msgs::msg::Odometry odom;
   odom.header.frame_id = "world";
 

@@ -135,3 +135,75 @@ We kindly recommend to cite [our paper](https://ieeexplore.ieee.org/document/113
   - release ROS2 version
 
 </details>
+
+
+
+
+```mermaid
+flowchart TD
+    A[节点启动<br/>Px4TrajNode / Px4TrajMode 构造] --> B[声明参数<br/>trajectory_file / clicked_path_file / use_clicked_path / 速度高度等]
+    B --> C[创建发布器与订阅器<br/>planned_path / trajectory_preview / clicked_path / active_point]
+    C --> D[创建 clicked_point 订阅]
+    D --> E[创建 preview_timer]
+    E --> F[初始化预览缓存<br/>clearPreviewPathCache + rebuildPreviewPathCache]
+
+    F --> G{模式是否被激活?}
+    G -- 否 --> H[等待]
+    G -- 是 --> I[onActivate]
+
+    I --> J[loadTrajectoryFromFile]
+    J --> K[读取 csv 航点<br/>loadWaypointsFromFile]
+    K --> L[计算 Bezier 平滑轨迹<br/>buildBezierTrajectorySamples]
+    L --> M[缓存预览路径消息<br/>cachePreviewPath]
+    M --> N{轨迹是否有效?}
+    N -- 否 --> O[进入 Idle<br/>保持当前位置]
+    N -- 是 --> P[state = GoToStart]
+    P --> Q[发布 planned_path]
+    Q --> R[如果 use_clicked_path=true<br/>设置首次点击清空标志]
+
+    R --> S[循环执行 updateSetpoint]
+    S --> T{当前位置与轨迹是否有效?}
+    T -- 否 --> U[goto_setpoint 保持悬停]
+    T -- 是 --> V{当前状态}
+
+    V -- GoToStart --> W[飞向轨迹起点]
+    W --> X{到达起点?}
+    X -- 否 --> S
+    X -- 是 --> Y[切到 HoldAtStart]
+
+    V -- HoldAtStart --> Z[起点悬停 start_hold_time]
+    Z --> AA{悬停时间到?}
+    AA -- 否 --> S
+    AA -- 是 --> AB[切到 ExecuteTrajectory]
+
+    V -- ExecuteTrajectory --> AC[按时间计算目标距离]
+    AC --> AD[插值得到目标位置]
+    AD --> AE[计算目标速度/航向]
+    AE --> AF[trajectory_setpoint 更新]
+    AF --> AG{是否到达轨迹末尾?}
+    AG -- 否 --> S
+    AG -- 是 --> AH[切到 HoldAtEnd]
+
+    V -- HoldAtEnd --> AI[终点悬停]
+    AI --> S
+
+    H --> AJ[previewTimerCallback]
+    AJ --> AK[直接发布缓存的 preview_path_msg]
+    AK --> H
+
+    D --> AL[clickedPointCallback]
+    AL --> AM{clear_clicked_path_on_next_click?}
+    AM -- 是 --> AN[清空 clicked_waypoints_enu_]
+    AM -- 否 --> AO[保留已有点击点]
+    AN --> AP[加入新点击点]
+    AO --> AP
+    AP --> AQ[写入 clicked_path.csv]
+    AQ --> AR[发布 clicked_path]
+    AR --> AS{use_clicked_path?}
+    AS -- 否 --> H
+    AS -- 是 --> AT[rebuildPreviewPathCache]
+    AT --> AU[重新读取 clicked_path.csv]
+    AU --> AV[重新计算 Bezier 预览]
+    AV --> AW[更新 preview_path_msg]
+    AW --> H
+```

@@ -16,6 +16,27 @@ using namespace BASIC;
 
 namespace LI2Sup{
 
+namespace {
+
+CloudPtr sampleCloudForPublish(const CloudPtr& input_cloud, int point_step) {
+  if (point_step <= 1 || input_cloud->empty()) {
+    return input_cloud;
+  }
+
+  CloudPtr sampled_cloud(new PointCloudType());
+  sampled_cloud->reserve((input_cloud->size() + point_step - 1) / point_step);
+  for (size_t i = 0; i < input_cloud->size(); i += point_step) {
+    sampled_cloud->push_back(input_cloud->points[i]);
+  }
+
+  sampled_cloud->width = sampled_cloud->size();
+  sampled_cloud->height = 1;
+  sampled_cloud->is_dense = input_cloud->is_dense;
+  return sampled_cloud;
+}
+
+}  // namespace
+
 inline bool calc_plane_coeff(const int N, const std::array<V3, 5>& points, std::array<double, 4>& abcd)
 {
   Eigen::Vector3d normvec;
@@ -308,19 +329,32 @@ void SuperLIOReLoc::Output() {
   CloudPtr world_pc(new PointCloudType());
   
   if(g_visual_map){
+    // Original frame-skipping publish logic kept here for future reference.
+    // static int count = -1;
+    // count++;
+    // if(count % g_pub_step != 0){
+    //   return;
+    // }
+    // count = 0;
+    // if(g_visual_dense){
+    //   pcl::transformPointCloud(*scan_undistort_full_, *world_pc, transformation);
+    //   data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
+    // }else{
+    //   pcl::transformPointCloud(*ds_undistort_, *world_pc, transformation);
+    //   data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
+    // }
+
     static int count = -1;
     count++;
-    if(count % g_pub_step != 0){
+    if(g_pub_step > 1 && count % g_pub_step != 0){
       return;
     }
     count = 0;
-    if(g_visual_dense){
-      pcl::transformPointCloud(*scan_undistort_full_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }else{
-      pcl::transformPointCloud(*ds_undistort_, *world_pc, transformation);
-      data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
-    }
+
+    const CloudPtr& source_cloud = g_visual_dense ? scan_undistort_full_ : ds_undistort_;
+    CloudPtr sampled_cloud = sampleCloudForPublish(source_cloud, g_pub_point_step);
+    pcl::transformPointCloud(*sampled_cloud, *world_pc, transformation);
+    data_wrapper_->pub_cloud_world(world_pc, state.timestamp);
   }
 
 }
