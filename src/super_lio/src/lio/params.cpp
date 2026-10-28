@@ -25,6 +25,7 @@ namespace LI2Sup{
   string g_lidar_topic;
 
   int    g_lidar_type;
+  bool   g_is_gazebo = false;  // Real LiDAR behavior by default.
   float  g_blind2;
   float  g_maxrange2;
   int    g_filter_rate;

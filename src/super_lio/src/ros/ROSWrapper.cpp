@@ -43,6 +43,10 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<int>("lio.sensor.lidar_type", 0);
   node.get_parameter("lio.sensor.lidar_type", g_lidar_type);
 
+  // Separate message format from Gazebo sampling semantics.
+  node.declare_parameter<bool>("lio.sensor.is_gazebo", false);
+  node.get_parameter("lio.sensor.is_gazebo", g_is_gazebo);
+
   double temp_range_dis;
   node.declare_parameter<double>("lio.sensor.blind", 0.0);
   node.get_parameter("lio.sensor.blind", temp_range_dis);
@@ -366,6 +370,9 @@ void ROSWrapper::imuHandler(const sensor_msgs::msg::Imu::SharedPtr msg){
     return;
   }
 
+  // Keep timestamps ordered in both modes; do not integrate twice.
+  if (data.secs == last_timestamp_imu_) return;
+
   imu_buffer_.push_back(data);
   last_timestamp_imu_ = data.secs;
 
@@ -532,28 +539,28 @@ void ROSWrapper::stdMsgHandler(const sensor_msgs::msg::PointCloud2::SharedPtr ms
 
     lidar_data.pc->reserve(pl_orig.size() / g_filter_rate + 1);
     lidar_data.start_time = stampToSec(msg->header.stamp);
-
+    // Only explicit Gazebo mode treats this format as a snapshot.
+    lidar_data.is_snapshot = g_is_gazebo;
     double scan_duration = 0.1;
-    if (last_lidar_start_time_ > 0.0 &&
-        lidar_data.start_time > last_lidar_start_time_) {
-      scan_duration = lidar_data.start_time - last_lidar_start_time_;
+    if (!lidar_data.is_snapshot) {
+      // Preserve the original LIVOX_SIM indexed timing when the switch is off.
+      if (last_lidar_start_time_ > 0.0 && lidar_data.start_time > last_lidar_start_time_) {
+        scan_duration = lidar_data.start_time - last_lidar_start_time_;
+      }
+      scan_duration = std::clamp(scan_duration, 0.001, 0.2);
     }
-    scan_duration = std::clamp(scan_duration, 0.001, 0.2);
 
     for(std::size_t i = 0; i < pl_orig.size(); i += g_filter_rate){
       auto& pt = pl_orig.points[i];
       if (!validPoint(pt.x, pt.y, pt.z)) continue;
-      offset_time = (pl_orig.size() > 1)
-                    ? scan_duration * static_cast<double>(i) /
-                          static_cast<double>(pl_orig.size() - 1)
-                    : 0.0;
       lidar_data.pc->emplace_back(
-          pt.x, pt.y, pt.z, pt.intensity, offset_time);
+          pt.x, pt.y, pt.z, pt.intensity,
+          lidar_data.is_snapshot || pl_orig.size() <= 1 ? 0.0 :
+              scan_duration * static_cast<double>(i) / static_cast<double>(pl_orig.size() - 1));
     }
 
     if (lidar_data.pc->empty()) return;
-    lidar_data.end_time = lidar_data.start_time +
-                          lidar_data.pc->points.back().offset_time;
+    lidar_data.end_time = lidar_data.start_time + lidar_data.pc->points.back().offset_time;
     last_lidar_start_time_ = lidar_data.start_time;
     break;
   }
@@ -575,7 +582,12 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
     lidar_pushed_ = true;
   }
 
-  if(last_timestamp_lidar_ > meas.lidar.end_time){
+  // Require an interpolation bracket only for Gazebo snapshots.
+  if(last_timestamp_lidar_ > meas.lidar.end_time ||
+     (meas.lidar.is_snapshot &&
+      (last_timestamp_lidar_ == meas.lidar.end_time ||
+       imu_buffer_.front().secs > meas.lidar.end_time))){
+    // A frame preceding the available IMU history cannot be interpolated.
     lidar_buffer_.pop_front();
     lidar_pushed_ = false;
     return false;
@@ -585,19 +597,43 @@ bool ROSWrapper::sync_measure(MeasureGroup& meas){
     return false;
   }
 
-  double imu_time = imu_buffer_.front().secs;
   meas.imu.clear();
-  while ((!imu_buffer_.empty()) && (imu_time < meas.lidar.end_time)) {
-    imu_time = imu_buffer_.front().secs;
-    if (imu_time > meas.lidar.end_time) break;
+  // Keep the original real-scan synchronization path.
+  if (!meas.lidar.is_snapshot) {
+    while (!imu_buffer_.empty() && imu_buffer_.front().secs <= meas.lidar.end_time) {
+      meas.imu.push_back(imu_buffer_.front());
+      imu_buffer_.pop_front();
+    }
+  } else {
+    const double sample_time = meas.lidar.end_time;
+    while (imu_buffer_.size() > 1 && imu_buffer_[1].secs <= sample_time) {
+      meas.imu.push_back(imu_buffer_.front());
+      imu_buffer_.pop_front();
+    }
     meas.imu.push_back(imu_buffer_.front());
-    imu_buffer_.pop_front();
+
+    if (imu_buffer_.front().secs < sample_time) {
+      // The newest IMU reaches sample_time, so a strictly later sample exists.
+      // Keep that sample in the queue for the next frame.
+      const auto& before = imu_buffer_[0];
+      const auto& after = imu_buffer_[1];
+      const double alpha = (sample_time - before.secs) / (after.secs - before.secs);
+      IMUData boundary;
+      boundary.secs = sample_time;
+      boundary.acc = before.acc + alpha * (after.acc - before.acc);
+      boundary.gyr = before.gyr + alpha * (after.gyr - before.gyr);
+      meas.imu.push_back(boundary);
+      imu_buffer_.front() = boundary;
+    }
+    // Retain the exact (possibly interpolated) endpoint as the next batch's
+    // first sample, including when multiple clouds fall in one IMU interval.
   }
 
   last_timestamp_lidar_ = meas.lidar.end_time;
   lidar_buffer_.pop_front();
   lidar_pushed_ = false;
-  return true;
+  // An empty legacy batch cannot initialize or predict the filter.
+  return !meas.imu.empty();
 }
 
 

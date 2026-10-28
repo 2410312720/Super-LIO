@@ -126,6 +126,9 @@ struct LidarData
 {
   double start_time = 0.0;
   double end_time = 0.0;
+  // Set only when is_gazebo is enabled for LIVOX_SIM.
+  // Gazebo gpu_lidar samples the entire cloud at the header timestamp.
+  bool is_snapshot = false;
   pcl::PointCloud<LI2Sup::PointXTZIT>::Ptr pc{nullptr};
 };
 

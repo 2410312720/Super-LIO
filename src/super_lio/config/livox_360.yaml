@@ -11,6 +11,7 @@
     lio.ros.imu_topic: "/livox/imu"
 
     lio.sensor.lidar_type: 1
+    lio.sensor.is_gazebo: false  # true=Gazebo GPU 瞬时点云；实机设为 false
     lio.sensor.blind: 2.0
     lio.sensor.maxrange: 60.0
     lio.sensor.filter_rate: 3

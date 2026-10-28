@@ -1,6 +1,8 @@
 
 #include "lio/super_lio.h"
 
+#include <algorithm>
+#include <cmath>
 #include <sys/resource.h>
 #include <tbb/parallel_for.h>
 #include <tbb/blocked_range.h>
@@ -176,6 +178,8 @@ bool SuperLIO::kf_init(){
   state.p = g_odom_robo.t_;        // By default, the robot frame is used as the reference origin.
   state.timestamp = measures_.imu.back().secs;
   kf_->SetX(state);
+  // Seed the interpolated endpoint only for Gazebo snapshots.
+  if (measures_.lidar.is_snapshot) kf_->Predict(measures_.imu.back());
   sys_init_pose_ = kf_->GetSE3();
   return true;
 }
@@ -184,17 +188,26 @@ bool SuperLIO::kf_init(){
 bool SuperLIO::map_init(){
   frame_num_++;
 
+  // Advance Gazebo snapshots; preserve real-scan map initialization.
+  if (measures_.lidar.is_snapshot) Propagation_Undistort();
   std::size_t ptsize = measures_.lidar.pc->size();
   points_world_v3_.resize(ptsize);
 
-  const SE3 transform = sys_init_pose_ * g_lidar_imu;
+  const SE3 transform = measures_.lidar.is_snapshot ? kf_->GetSE3() :
+      sys_init_pose_ * g_lidar_imu;
 
   tbb::parallel_for(
     tbb::blocked_range<size_t>(0, ptsize),
     [&](const tbb::blocked_range<size_t>& r) {
       for (size_t idx = r.begin(); idx < r.end(); ++idx) {
-        auto& point_pcl = measures_.lidar.pc->points[idx];
-        V3 point_body(point_pcl.x, point_pcl.y, point_pcl.z);
+        V3 point_body;
+        if (measures_.lidar.is_snapshot) {
+          const auto& pt = scan_undistort_full_->points[idx];
+          point_body = V3(pt.x, pt.y, pt.z);
+        } else {
+          const auto& pt = measures_.lidar.pc->points[idx];
+          point_body = V3(pt.x, pt.y, pt.z);
+        }
         points_world_v3_[idx] = transform * point_body;
       }
     }
@@ -383,13 +396,15 @@ void SuperLIO::Propagation_Undistort(){
   propagate_states_.clear();
   propagate_states_.emplace_back(kf_->GetDynamicState());
   kf_->SetObsTime(measures_.lidar.end_time);
+  // Predict in both modes; store only advancing states.
   for (auto &imu : measures_.imu) {
-    kf_->Predict(imu);
-    propagate_states_.emplace_back(kf_->GetDynamicState());
+    if (kf_->Predict(imu)) {
+      propagate_states_.emplace_back(kf_->GetDynamicState());
+    }
   }
 
-  static const M3 TLI_R = g_lidar_imu.R_;
-  static const V3 TLI_t = g_lidar_imu.t_;
+  const M3 TLI_R = g_lidar_imu.R_;
+  const V3 TLI_t = g_lidar_imu.t_;
   const SE3 T_end = kf_->GetSE3();
   const M3  R_inv = T_end.R_.transpose();
   const V3  T_end_t = T_end.t_;
@@ -402,41 +417,42 @@ void SuperLIO::Propagation_Undistort(){
   tbb::parallel_for(
   tbb::blocked_range<size_t>(0, ptsize),
   [&](const tbb::blocked_range<size_t>& r) {
-    M3 R_h, R_t; V3 p_h, v_h, acc_t, w_t;
-    for (size_t idx = r.begin(); idx < r.end(); ++idx) {  
+    for (size_t idx = r.begin(); idx < r.end(); ++idx) {
       auto& pt_full = scan_undistort_full_->points[idx];
       const auto& pt = raw_pc->points[idx];
       pt_full.intensity = pt.intensity;
-      double query_time = start_time + pt.offset_time;
-      if (query_time > propagate_states_.back().time) {
-        V3 raw(pt.x, pt.y, pt.z);
-        V3 eigen_point = TLI_R * raw + TLI_t;
-        pt_full.x = eigen_point[0];
-        pt_full.y = eigen_point[1];
-        pt_full.z = eigen_point[2];
-        continue;
-      }
-      auto match_iter = propagate_states_.begin();
-      for (auto iter = propagate_states_.begin(); iter != propagate_states_.end(); ++iter) {
-        auto next_iter = std::next(iter);
-        if (iter->time < query_time && next_iter->time >= query_time) {
-          match_iter = iter;
-          break;
+      const V3 point_imu = TLI_R * V3(pt.x, pt.y, pt.z) + TLI_t;
+      V3 eigen_point = point_imu;
+
+      // IMU prediction above always runs. A GPU snapshot has no intra-frame
+      // motion: only apply the fixed LiDAR -> IMU extrinsics to its points.
+      if (!measures_.lidar.is_snapshot) {
+        const double query_time = start_time + pt.offset_time;
+        if (std::isfinite(query_time)) {
+          M3 R_i;
+          V3 p_i;
+          if (query_time <= propagate_states_.front().time) {
+            R_i = propagate_states_.front().R;
+            p_i = propagate_states_.front().p;
+          } else if (query_time >= propagate_states_.back().time) {
+            R_i = propagate_states_.back().R;
+            p_i = propagate_states_.back().p;
+          } else {
+            // Shared real-scan bug fix: tau and safe interval bounds.
+            // Only successful, strictly advancing predictions enter the
+            // history. upper_bound also handles exact internal timestamps.
+            const auto tail = std::upper_bound(
+                propagate_states_.begin(), propagate_states_.end(), query_time,
+                [](double time, const DynamicState& state) { return time < state.time; });
+            const auto head = std::prev(tail);
+            const double dt = tail->time - head->time;
+            const double tau = query_time - head->time;
+            R_i = Quat(head->R).slerp(tau / dt, Quat(tail->R)).toRotationMatrix();
+            p_i = head->p + head->v * tau + 0.5 * tail->a * tau * tau;
+          }
+          eigen_point = R_inv * (R_i * point_imu + p_i - T_end_t);
         }
       }
-      auto match_iter_n = std::next(match_iter);
-      double dt = match_iter_n->time - match_iter->time;
-      double s = (query_time - match_iter->time) / dt;
-      R_h = match_iter->R;
-      R_t = match_iter_n->R;
-      p_h = match_iter->p;
-      v_h = match_iter->v;
-      acc_t = match_iter_n->a;
-      w_t = match_iter_n->w;
-      M3 R_i = Quat(R_h).slerp(s, Quat(R_t)).toRotationMatrix();
-      V3 t_ei(p_h + v_h * dt + 0.5 * acc_t * dt * dt - T_end_t);
-      V3 raw(pt.x, pt.y, pt.z);
-      V3 eigen_point = R_inv * (R_i * (TLI_R * raw + TLI_t) + t_ei);
       pt_full.x = eigen_point[0];
       pt_full.y = eigen_point[1];
       pt_full.z = eigen_point[2];

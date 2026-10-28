@@ -273,8 +273,10 @@ bool SuperLIOReLoc::kf_init(){
   /// The horizontal initial state of the imu in the robot coordinate system.
   state.R = SO3(init_guess_T.block<3, 3>(0, 0));
   state.p = init_guess_T.block<3, 1>(0, 3);
-  state.timestamp = -1.0;
+  // Gazebo starts at the snapshot time; retain real-scan initialization.
+  state.timestamp = measures_.lidar.is_snapshot ? measures_.lidar.end_time : -1.0;
   kf_->SetX(state);
+  if (measures_.lidar.is_snapshot) kf_->Predict(measures_.imu.back());
   sys_init_pose_ = kf_->GetSE3();
 
   {

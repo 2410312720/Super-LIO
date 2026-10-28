@@ -164,6 +164,17 @@ bool ESKF::Predict(const IMUData& imu, DynamicState& state_imu, DynamicState& st
 
 bool ESKF::Predict(const IMUData& imu) {
 
+  // Shared timestamp protection for Gazebo and real scans.
+  // sync_measure repeats the previous cloud's endpoint to seed integration.
+  // Cache it without a zero/negative time step or rewinding the filter clock.
+  if (imu.secs <= current_time_) {
+    if (imu.secs == current_time_) {
+      last_imu_time_ = imu.secs;
+      last_imu_ = imu;
+    }
+    return false;
+  }
+
   if(last_imu_time_ < 0){
     last_imu_time_ = imu.secs;
     last_imu_ = imu;

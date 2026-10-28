@@ -124,4 +124,11 @@ install(DIRECTORY rviz/
   DESTINATION share/${PROJECT_NAME}/rviz
 )
 
+# Regression coverage for Gazebo and real-scan modes.
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(snapshot_timing_test test/snapshot_timing_test.cpp)
+  target_link_libraries(snapshot_timing_test lio)
+endif()
+
 ament_package()
