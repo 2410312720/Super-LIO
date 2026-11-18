@@ -7,7 +7,6 @@ using namespace BASIC;
 
 namespace LI2Sup{
 
-  const std::string g_root_dir = std::string(ROOT);
   std::atomic<bool> g_flag_run = true; 
   bool g_flg_map_init = true;
 

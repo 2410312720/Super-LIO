@@ -454,8 +454,9 @@ void OctVoxMap<Point, Scalar>::resetMap(const std::vector<float>& input){
 template<typename Point, typename Scalar>
 void OctVoxMap<Point, Scalar>::saveMap() const {
 
-  const std::string g_root_dir = std::string(ROOT);
-  std::string filename = g_root_dir + "map/OctVoxMap.pcd";
+  const std::filesystem::path map_dir("map");
+  std::filesystem::create_directories(map_dir);
+  const std::string filename = (map_dir / "OctVoxMap.pcd").string();
 
   if (std::filesystem::exists(filename)) {
     std::filesystem::remove(filename);

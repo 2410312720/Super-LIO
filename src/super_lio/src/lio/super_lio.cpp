@@ -500,12 +500,10 @@ void SuperLIO::caceData(){
 
   static bool rm_PCD_dir = false;
   if(!rm_PCD_dir){
+    const auto pcd_dir = std::filesystem::path(g_save_map_dir) / "PCD";
+    std::filesystem::remove_all(pcd_dir);
+    std::filesystem::create_directories(pcd_dir);
     rm_PCD_dir = true;
-    std::string cmd = "rm -rf " + g_save_map_dir + "/PCD";
-    [[maybe_unused]] int res;
-    res = system(cmd.c_str());
-    cmd = "mkdir -p " + g_save_map_dir + "/PCD";
-    res = system(cmd.c_str());
   }
 
   if (point_map_->size() > 0 && scan_wait_num >= g_pcd_save_interval) {

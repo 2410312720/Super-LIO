@@ -11,7 +11,7 @@
     lio.ros.imu_topic: "/livox/imu"
 
     lio.sensor.lidar_type: 1
-    lio.sensor.blind: 0.45
+    lio.sensor.blind: 0.20
     lio.sensor.maxrange: 60.0
     lio.sensor.filter_rate: 2
     lio.sensor.enable_downsample: true
@@ -62,7 +62,7 @@
     lio.eva.diagnostics_publish_every_n_frames: 5
 
     # Dynamic filtering is opt-in. Set enable to true to activate it.
-    lio.dynamic.enable: true
+    lio.dynamic.enable: false
     lio.dynamic.filter_pose_update: true
     lio.dynamic.filter_map_update: true
     lio.dynamic.filter_saved_map: true

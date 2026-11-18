@@ -27,7 +27,6 @@
 
 namespace LI2Sup{
   
-  extern const std::string g_root_dir;
   extern std::atomic<bool> g_flag_run;
   extern bool g_flg_map_init;
 

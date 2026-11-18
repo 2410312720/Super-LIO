@@ -1,5 +1,6 @@
+"""Standalone simulated localization; the complete flight entry is in super_planner."""
+
 import os
-import launch.logging
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -7,6 +8,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
+
 
 def generate_launch_description():
     pkg_super_lio = get_package_share_directory('super_lio')
@@ -27,7 +29,7 @@ def generate_launch_description():
     )
     declare_use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
-        default_value='false',
+        default_value='true',
         description='Use simulation clock if true',
     )
     super_lio_component = IncludeLaunchDescription(
@@ -45,6 +47,7 @@ def generate_launch_description():
         executable='rviz2',
         name='super_lio',
         arguments=['-d', rviz_config_file, '--ros-args', '--log-level', 'warn'],
+        parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
         condition=IfCondition(rviz_flag)
     )
 

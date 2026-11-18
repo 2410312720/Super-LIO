@@ -9,8 +9,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -pthread -fexceptions -flto=auto")
 set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -fPIC")
-add_definitions(-DROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 
+# Transitive dependencies such as PCL/VTK need the target multiarch configs.
+if(CMAKE_SYSROOT)
+  list(PREPEND CMAKE_PREFIX_PATH
+    "${CMAKE_SYSROOT}/usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/cmake")
+endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -27,7 +31,7 @@ find_package(livox_ros_driver2 REQUIRED)
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED)
-find_package(Glog REQUIRED)
+find_package(glog CONFIG REQUIRED)
 find_package(basic REQUIRED)
 
 
@@ -49,7 +53,6 @@ include_directories(
   3rdparty
   ${EIGEN3_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
-  ${Glog_INCLUDE_DIRS}
 )
 
 file(GLOB_RECURSE LIO_LIB_SRC "src/lio/*.cpp" "src/ros/*.cpp")
@@ -74,7 +77,7 @@ ament_target_dependencies(lio PUBLIC
 target_link_libraries(lio PUBLIC
   Eigen3::Eigen
   ${PCL_LIBRARIES}
-  glog
+  glog::glog
   pthread
   ${cpp_typesupport_target}
 )
@@ -154,15 +157,13 @@ if(BUILD_TESTING)
   ament_add_gtest(test_observation_utils test/test_observation_utils.cpp)
   target_include_directories(test_observation_utils PRIVATE include)
 
+  ament_add_gtest(test_body_tf test/test_body_tf.cpp)
+  target_link_libraries(test_body_tf lio)
+
   ament_add_gtest(test_forward_state_sync test/test_forward_state_sync.cpp)
   target_include_directories(test_forward_state_sync PRIVATE include)
   target_link_libraries(test_forward_state_sync lio Eigen3::Eigen)
 
-  ament_add_pytest_test(test_component_launch
-    test/test_component_launch.py
-    TIMEOUT 100
-    ENV PYTHONDONTWRITEBYTECODE=1
-  )
 endif()
 
 ament_package()

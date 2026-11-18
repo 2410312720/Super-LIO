@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 
 
@@ -132,9 +133,14 @@ void LoadParamFromRos(rclcpp::Node& node)
   node.declare_parameter<bool>("lio.map.if_filter", false);
   node.get_parameter("lio.map.if_filter", g_if_filter);
 
-  node.declare_parameter<std::string>("lio.map.save_map_dir", "");
+  node.declare_parameter<std::string>("lio.map.save_map_dir", "map");
   node.get_parameter("lio.map.save_map_dir", g_save_map_dir);
-  g_save_map_dir = g_root_dir + g_save_map_dir;
+  // Relative map paths use the process working directory, including after install.
+  if (g_save_map_dir.empty()) g_save_map_dir = ".";
+  if (g_save_map) std::filesystem::create_directories(g_save_map_dir);
+  LOG(INFO) << GREEN << " ---> [Param] map/save_map_dir: " << g_save_map_dir
+            << " (resolved: "
+            << std::filesystem::absolute(g_save_map_dir).string() << ")" << RESET;
 
   node.declare_parameter<std::string>("lio.map.map_name", "default");
   node.get_parameter("lio.map.map_name", g_map_name);
@@ -607,7 +613,7 @@ void ROSWrapper::setupIO(){
 
   pub_cloud_world_ =
     this->create_publisher<sensor_msgs::msg::PointCloud2>(
-        "/lio/cloud_world", 10);
+        "/lio/cloud_world", rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile());
 
   if (g_dynamic_filter_options.enable) {
     pub_dynamic_ratio_ =
@@ -1093,16 +1099,15 @@ void ROSWrapper::pub_odom(const NavState& state){
   pub_odom_->publish(odom);    // imu frame -> lidar frequency
 
   V3 robo_position = state.R.R_ * ( - g_odom_robo.R_ * g_odom_robo.t_) + state.p;
+  const Quat robo_quat(state.R.R_ * g_odom_robo.R_);
 
   if(g_2_robot){
     static auto pub_msg2uav_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
         "/mavros/vision_pose/pose", 10);
-    M3 robo_rotation = state.R.R_ * g_odom_robo.R_;
     msg2uav_.header.stamp = odom.header.stamp;
     msg2uav_.pose.position.x = robo_position[0];
     msg2uav_.pose.position.y = robo_position[1];
     msg2uav_.pose.position.z = robo_position[2];
-    Quat robo_quat(robo_rotation);
     msg2uav_.pose.orientation.w = robo_quat.w();
     msg2uav_.pose.orientation.x = robo_quat.x();
     msg2uav_.pose.orientation.y = robo_quat.y();
@@ -1137,12 +1142,19 @@ void ROSWrapper::pub_odom(const NavState& state){
 
   tf_broadcaster_->sendTransform(tf_msg);
 
-  // tf_msg.child_frame_id = "god";
-  // tf_msg.transform.rotation.x = 0.0;
-  // tf_msg.transform.rotation.y = 0.0;
-  // tf_msg.transform.rotation.z = 0.0;
-  // tf_msg.transform.rotation.w = 1.0;
-  // tf_broadcaster_->sendTransform(tf_msg);
+  // Publish the body pose too: Odometry.child_frame_id alone does not add
+  // a frame to the TF tree. Use the same mounting transform as robot odometry.
+  if (robot_frame_id_ != imu_frame_id_) {
+    tf_msg.child_frame_id = robot_frame_id_;
+    tf_msg.transform.translation.x = robo_position.x();
+    tf_msg.transform.translation.y = robo_position.y();
+    tf_msg.transform.translation.z = robo_position.z();
+    tf_msg.transform.rotation.x = robo_quat.x();
+    tf_msg.transform.rotation.y = robo_quat.y();
+    tf_msg.transform.rotation.z = robo_quat.z();
+    tf_msg.transform.rotation.w = robo_quat.w();
+    tf_broadcaster_->sendTransform(tf_msg);
+  }
 
 }
 

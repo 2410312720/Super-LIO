@@ -12,7 +12,11 @@ set(CMAKE_C_FLAGS_RELEASE "-O3 -Wall -fPIC")
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(Glog REQUIRED)
+if(CMAKE_SYSROOT)
+  list(PREPEND CMAKE_PREFIX_PATH
+    "${CMAKE_SYSROOT}/usr/lib/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/cmake")
+endif()
+find_package(glog CONFIG REQUIRED)
 find_package(Eigen3 REQUIRED NO_MODULE)
 find_package(PCL REQUIRED)
 
@@ -36,7 +40,6 @@ target_include_directories(${PROJECT_NAME}
   $<INSTALL_INTERFACE:include>
   ${EIGEN3_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
-  ${Glog_INCLUDE_DIRS}
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -44,7 +47,7 @@ target_link_libraries(${PROJECT_NAME}
   Eigen3::Eigen
   ${PCL_LIBRARIES}
   gflags
-  glog
+  glog::glog
   pthread
 )
 
@@ -59,7 +62,7 @@ install(
 install(DIRECTORY include/ DESTINATION include)
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp Eigen3 PCL)
+ament_export_dependencies(rclcpp Eigen3 PCL glog)
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME})
 
